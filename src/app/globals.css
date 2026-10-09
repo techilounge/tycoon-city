@@ -1,0 +1,4 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+:root{color-scheme:dark}body{background:#0b1319;color:#eef4f2;font-family:Arial,Helvetica,sans-serif} .panel{background:#14232a;border:1px solid #294047;border-radius:20px} .cta{background:#d8b86b;color:#152127;padding:12px 20px;border-radius:12px;font-weight:700} .secondary{border:1px solid #587078;padding:12px 20px;border-radius:12px} a:focus-visible,button:focus-visible{outline:3px solid #eacb7b;outline-offset:3px}
