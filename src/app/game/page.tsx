@@ -54,8 +54,8 @@ export default function GamePage() {
     setPending(false);
     setError(null);
     setRevealed(true);
-    const unsubscribe = next.events.subscribe(next.state().gameId, 1, () => {
-      setHistory((h) => [...h]);
+    const unsubscribe = next.events.subscribe(next.state().gameId, 1, (event) => {
+      setHistory((h) => [...h, event]);
       setState(next.state());
     });
     return unsubscribe;
@@ -85,7 +85,9 @@ export default function GamePage() {
       const previousPlayer = state.activePlayerId;
       setState(result.state);
       // Handoff gate: pause for the next player when the turn changes hands.
-      if (result.state.phase === 'PLAYING' && result.state.activePlayerId !== previousPlayer) {
+      // Game start is not a handoff — LOBBY has no active player (null), so
+      // the first TURN_STARTED reveals controls directly (spec §11).
+      if (result.state.phase === 'PLAYING' && previousPlayer !== null && result.state.activePlayerId !== previousPlayer) {
         setRevealed(false);
       }
     },
@@ -151,6 +153,18 @@ export default function GamePage() {
       <p className="mt-1 text-sm text-slate-400">
         {state.phase === 'LOBBY' ? 'Hot-seat preview · 2 players' : `Round ${round} · ${state.players.length} players · hot-seat`}
       </p>
+
+      {state.phase === 'LOBBY' && (
+        <section className="panel mt-6 p-6" aria-label="Game start">
+          <h2 className="text-xl font-bold">Ready to begin</h2>
+          <p className="mt-2 text-sm text-slate-300">
+            {PLAYER_NAMES.join(' and ')} take turns on this device. Each turn: roll, move, buy or decline, then end the turn.
+          </p>
+          <button className="cta mt-4" onClick={() => submit('START_GAME')} disabled={pending}>
+            Start game
+          </button>
+        </section>
+      )}
 
       {state.phase === 'PLAYING' && (
         <div className="mt-6 grid gap-4 lg:grid-cols-[2fr_1fr]">
