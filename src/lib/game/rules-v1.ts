@@ -23,26 +23,8 @@ export const LEVEL_RENT_MULTIPLIERS: readonly [1, 3, 7, 15, 20] = [1, 3, 7, 15, 
 /** Highest upgrade level a property can hold (the landmark). */
 export const MAX_UPGRADE_LEVEL = 4;
 
-/** Base rent: 10% of list price (spec §8). */
-export const BASE_RENT_RATE = 0.1;
-
 /** Rent doubles when the owner holds every property in the district (spec §8). */
 export const DISTRICT_COMPLETE_MULTIPLIER = 2;
-
-/** Building an upgrade level costs 50% of the space's list price (spec §8). */
-export const UPGRADE_COST_RATE = 0.5;
-
-/** Selling an upgrade level back returns 50% of the price originally paid for it (spec §7, §9). */
-export const UPGRADE_SELL_BACK_RATE = 0.5;
-
-/** Taking a mortgage pays 50% of the space's list price (spec §8). */
-export const MORTGAGE_PAYOUT_RATE = 0.5;
-
-/** A mortgage's liability against net worth: 50% of list price (spec §9). */
-export const MORTGAGE_LIABILITY_RATE = 0.5;
-
-/** Lifting a mortgage costs 110% of the space's list price (spec §8). */
-export const UNMORTGAGE_COST_RATE = 1.1;
 
 /** City services charge 6× the dice total, or 18× when one owner holds both (spec §8). */
 export const SERVICE_MULTIPLIER_SINGLE = 6;
@@ -58,9 +40,11 @@ export function floor5(amount: number): number {
   return Math.floor(amount / 5) * 5;
 }
 
-/** Base rent is 10% of the space's list price, before multipliers (spec §8). */
+/** Base rent is 10% of the space's list price, before multipliers (spec §8).
+ *  Computed as price/10 — exact for v1's multiples of 20, where `price * 0.1`
+ *  would incur binary-floating-point error at the last digit. */
 export function baseRent(listPrice: number): number {
-  return listPrice * BASE_RENT_RATE;
+  return listPrice / 10;
 }
 
 export interface RentInput {
@@ -86,27 +70,28 @@ export function rentFor({ listPrice, level, districtComplete }: RentInput): numb
 
 /** One upgrade level costs 50% of the space's list price (spec §8). */
 export function upgradeCost(listPrice: number): number {
-  return listPrice * UPGRADE_COST_RATE;
+  return listPrice / 2;
 }
 
 /** Selling built levels back returns 50% of the price originally paid (spec §7). */
 export function upgradeSellBackProceeds(cumulativeUpgradeSpend: number): number {
-  return cumulativeUpgradeSpend * UPGRADE_SELL_BACK_RATE;
+  return cumulativeUpgradeSpend / 2;
 }
 
 /** Taking a mortgage pays out 50% of the list price (spec §8). */
 export function mortgageProceeds(listPrice: number): number {
-  return listPrice * MORTGAGE_PAYOUT_RATE;
+  return listPrice / 2;
 }
 
 /** The mortgage liability carried by a mortgaged space: 50% of list price (spec §9). */
 export function mortgageLiability(listPrice: number): number {
-  return listPrice * MORTGAGE_LIABILITY_RATE;
+  return listPrice / 2;
 }
 
-/** Lifting a mortgage costs 110% of the list price (spec §8). */
+/** Lifting a mortgage costs 110% of the list price — computed as ×11/10, exact
+ *  for multiples of 20 (`price * 1.1` would incur float error). */
 export function unmortgageCost(listPrice: number): number {
-  return listPrice * UNMORTGAGE_COST_RATE;
+  return (listPrice * 11) / 10;
 }
 
 /** Transit hub rent: $60 with one hub, $150 with both (spec §8). */
