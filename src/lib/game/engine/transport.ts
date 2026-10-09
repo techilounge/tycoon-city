@@ -95,7 +95,7 @@ export interface LocalCommandSinkOptions extends CreateGameInput {
  */
 export class LocalCommandSink implements CommandSink {
   static create(options: LocalCommandSinkOptions): LocalCommandSink {
-    const created = createGame({ gameId: options.gameId, seed: options.seed, playerIds: options.playerIds });
+    const created = createGame({ gameId: options.gameId, seed: options.seed, playerIds: options.playerIds, mode: options.mode });
     if (!created.ok) throw created.error;
     return new LocalCommandSink(created.state, created.events, options.snapshots ?? new InMemorySnapshotStore());
   }

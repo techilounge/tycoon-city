@@ -15,10 +15,12 @@
  * state word is persisted back into GameState.
  */
 import { validateCommandShape, type CommandType, type GameCommand } from '../commands';
+import { BOARD_LOOP_SIZE, BOARD_SPACES, MODES, MODE_IDS, START_BONUS, isPurchasable, type ModeId } from '../board-v1';
 import { stampEvents, type AnyEventInput, type AnyGameEvent } from '../events';
 import { rngForState, type RandomSource } from '../rng';
 import { MAX_PLAYERS, MIN_PLAYERS, RULES_VERSION, type GameState, type PlayerId } from '../types';
 import { RuleError } from './errors';
+import { moveForward, nearestParkIndex } from './movement';
 
 /** Success carries the new state, the stamped events, and whether the command
  *  applied (false for idempotent duplicates, which apply nothing). Failure
@@ -35,6 +37,8 @@ export interface CreateGameInput {
   readonly gameId: string;
   readonly seed: number;
   readonly playerIds: readonly PlayerId[];
+  /** Game mode (spec §8); defaults to CLASSIC. Fixed at creation. */
+  readonly mode?: ModeId;
 }
 
 /**
@@ -147,11 +151,26 @@ export function canAct(state: GameState, command: GameCommand): boolean {
   }
 }
 
-/** Mutable view of GameState inside a command application; the reducer clones
- *  before any handler runs, so mutation here never escapes uncommitted. */
-export type GameStateDraft = { -readonly [K in keyof GameState]: GameState[K] };
+/**
+ * Deeply mutable view of GameState for handler bodies: the reducer clones
+ * before any handler runs (mutation here never escapes uncommitted), handlers
+ * write through the draft, and the reducer commits it in one piece.
+ * Engine-private — never crosses the public boundary — so stripping readonly
+ * (including inside the players array) is safe. Handlers mutate player drafts
+ * freely; the array itself is never resized.
+ */
+type GameStateDraft = {
+  -readonly [K in keyof GameState]: GameState[K] extends readonly (infer T)[]
+    ? T extends object
+      ? Array<{ -readonly [P in keyof T]: T[P] }>
+      : T[]
+    : GameState[K];
+};
 
 type CommandHandler = (draft: GameStateDraft, command: GameCommand, rng: RandomSource) => readonly AnyEventInput[];
+
+/** A player ON the draft: mutable, unlike the published PlayerState. */
+type DraftPlayer = GameStateDraft['players'][number];
 
 function startGameHandler(draft: GameStateDraft): readonly AnyEventInput[] {
   if (draft.phase !== 'LOBBY') {
@@ -170,10 +189,202 @@ function saveSnapshotHandler(draft: GameStateDraft): readonly AnyEventInput[] {
   return [{ type: 'SNAPSHOT_SAVED', payload: { stateVersion: draft.version + 1 } }];
 }
 
-/** Rules PRs (4–8) add handlers here; the pipeline itself is closed. */
+/** Look up a player on the draft after authorization has proven they exist;
+ *  a miss is an engine bug (canAct already rejected unknown actors), not a
+ *  rule outcome — so a plain Error, never a RuleError. */
+function requirePlayer(draft: GameStateDraft, playerId: PlayerId): DraftPlayer {
+  const player = draft.players.find((p) => p.id === playerId);
+  if (!player) throw new Error(`engine bug: player ${playerId} not found after authorization`);
+  return player;
+}
+
+/**
+ * Hand the turn to the next player in seat order — the shared tail of rows
+ * 2, 4, and 12. The doubles counter resets on a turn pass (spec §4); marked
+ * players have their next-turn skip consumed as TURN_SKIPPED + TURN_ENDED
+ * pairs; the first unmarked player begins the next turn ordinal. Skipped
+ * players consume an ordinal — a round is one pass through the seats (PR 8's
+ * round cap builds on this). Prerequisite: TURN_ENDED for the ending player
+ * was already emitted by the caller.
+ */
+function advanceToNextTurn(draft: GameStateDraft, fromPlayerId: PlayerId): readonly AnyEventInput[] {
+  draft.doublesCount = 0;
+  const from = requirePlayer(draft, fromPlayerId);
+  const count = draft.players.length;
+  const events: AnyEventInput[] = [];
+  let turnCounter = draft.turn;
+  let chosen: DraftPlayer | undefined;
+  // players is seat-ordered by construction (createGame maps seat = index).
+  // Two laps bound the walk: one lap can consume every mark (when all players
+  // are marked), so the first unmarked seat may only appear on the second.
+  for (let step = 1; step <= 2 * count && !chosen; step++) {
+    const candidate = draft.players[(from.seat + step) % count];
+    turnCounter += 1;
+    if (!candidate.skipNextTurn) {
+      chosen = candidate;
+    } else {
+      candidate.skipNextTurn = false;
+      events.push({ type: 'TURN_SKIPPED', payload: { playerId: candidate.id, reason: 'THIRD_DOUBLES' } });
+      events.push({ type: 'TURN_ENDED', payload: { playerId: candidate.id, turn: turnCounter } });
+    }
+  }
+  if (!chosen) throw new Error('engine bug: turn handover found no eligible player');
+  draft.turn = turnCounter;
+  draft.activePlayerId = chosen.id;
+  draft.turnPhase = 'AWAITING_ROLL';
+  events.push({ type: 'TURN_STARTED', payload: { playerId: chosen.id, turn: turnCounter } });
+  return events;
+}
+
+/** Row 1: roll two d6; row 3 resolves the move automatically inside the same
+ *  command; row 4 intercepts the third consecutive double. */
+function rollHandler(draft: GameStateDraft, command: GameCommand, rng: RandomSource): readonly AnyEventInput[] {
+  if (draft.turnPhase !== 'AWAITING_ROLL') {
+    throw new RuleError('INVALID_PHASE', `ROLL is only valid in AWAITING_ROLL, not ${String(draft.turnPhase)}`, { phase: draft.turnPhase });
+  }
+  const player = requirePlayer(draft, command.actorId);
+  // Two d6 draws, die1 then die2 — call order is replay-stable (spec §3).
+  const die1 = rng.nextInt(6) + 1;
+  const die2 = rng.nextInt(6) + 1;
+  const dice = [die1, die2] as const;
+  const events: AnyEventInput[] = [{ type: 'DICE_ROLLED', payload: { playerId: player.id }, meta: { dice } }];
+
+  const doubles = die1 === die2;
+  draft.doublesCount = doubles ? draft.doublesCount + 1 : 0;
+
+  // Row 4: third consecutive doubles — the roll does not move the token by
+  // its dice; the token is relocated to the nearest park, the player's next
+  // turn is skipped, and the turn ends without a management phase.
+  if (doubles && draft.doublesCount >= 3) {
+    const parkIndex = nearestParkIndex(player.position, BOARD_SPACES);
+    events.push({ type: 'PLAYER_MOVED', payload: { playerId: player.id, from: player.position, to: parkIndex, direction: 'FORWARD' } });
+    player.position = parkIndex;
+    player.skipNextTurn = true;
+    draft.doublesCount = 0;
+    // The penalty relocation never pays the start bonus — even when the
+    // forward park walk crosses Gateway Terminal (row 3 grants the bonus on
+    // dice and card moves only; genre penalty convention). Pinned by test.
+    events.push({ type: 'TURN_ENDED', payload: { playerId: player.id, turn: draft.turn } });
+    events.push(...advanceToNextTurn(draft, player.id));
+    return events;
+  }
+
+  // Row 3 (automatic): advance the token, pay the start bonus on any forward
+  // pass or landing of Gateway Terminal, then resolve the landed space.
+  const move = moveForward(player.position, die1 + die2, BOARD_LOOP_SIZE);
+  events.push({ type: 'PLAYER_MOVED', payload: { playerId: player.id, from: player.position, to: move.toIndex, direction: move.direction } });
+  player.position = move.toIndex;
+  if (move.passesGateway) {
+    player.cash += START_BONUS;
+    events.push({ type: 'START_BONUS_PAID', payload: { playerId: player.id, amount: START_BONUS } });
+  }
+  // PR 4 resolves only the buy gate: an unowned purchasable space opens the
+  // BUY_DECISION. Rent, taxes, service charges, and Event-Deck draws on the
+  // landed space land with PR 5 (spec §12) — until then they are no-ops.
+  const landed = BOARD_SPACES[move.toIndex];
+  if (isPurchasable(landed) && !(landed.id in draft.owners)) {
+    draft.turnPhase = 'BUY_DECISION';
+  } else {
+    draft.turnPhase = 'TURN_MANAGEMENT';
+  }
+  return events;
+}
+
+/** Row 2: consume a Hold token and skip the holder's entire current turn. */
+function holdHandler(draft: GameStateDraft, command: GameCommand): readonly AnyEventInput[] {
+  if (draft.turnPhase !== 'AWAITING_ROLL') {
+    throw new RuleError('INVALID_PHASE', `HOLD is only valid in AWAITING_ROLL, not ${String(draft.turnPhase)}`, { phase: draft.turnPhase });
+  }
+  const player = requirePlayer(draft, command.actorId);
+  if (player.tokens.HOLD < 1) {
+    throw new RuleError('INSUFFICIENT_RESOURCES', `player ${player.id} holds no Hold token`, { token: 'HOLD', held: player.tokens.HOLD });
+  }
+  player.tokens = { ...player.tokens, HOLD: player.tokens.HOLD - 1 };
+  const events: AnyEventInput[] = [
+    { type: 'TOKEN_CONSUMED', payload: { playerId: player.id, token: 'HOLD' } },
+    { type: 'TURN_SKIPPED', payload: { playerId: player.id, reason: 'HOLD_TOKEN' } },
+    { type: 'TURN_ENDED', payload: { playerId: player.id, turn: draft.turn } },
+  ];
+  // Victory check seam (PR 8): evaluated at every TURN_ENDED (spec §4, §8).
+  events.push(...advanceToNextTurn(draft, player.id));
+  return events;
+}
+
+/** Row 5: buy the token's unowned purchasable space at list price. */
+function buyHandler(draft: GameStateDraft, command: GameCommand): readonly AnyEventInput[] {
+  if (draft.turnPhase !== 'BUY_DECISION') {
+    throw new RuleError('INVALID_PHASE', `BUY is only valid in BUY_DECISION, not ${String(draft.turnPhase)}`, { phase: draft.turnPhase });
+  }
+  const player = requirePlayer(draft, command.actorId);
+  const landed = BOARD_SPACES[player.position];
+  if (!isPurchasable(landed)) {
+    throw new RuleError('RULE_VIOLATION', `space ${landed.id} is not purchasable`, { spaceId: landed.id, kind: landed.kind });
+  }
+  if (landed.id in draft.owners) {
+    throw new RuleError('RULE_VIOLATION', `space ${landed.id} is already owned`, { spaceId: landed.id, ownerId: draft.owners[landed.id] });
+  }
+  // The registry correlates type and payload; TS cannot carry that through
+  // the handler union — same documented cast as stampEvents.
+  const requested = (command.payload as { readonly spaceId?: string }).spaceId;
+  if (requested !== undefined && requested !== landed.id) {
+    throw new RuleError('RULE_VIOLATION', `payload spaceId ${requested} does not match the token's space ${landed.id}`, { spaceId: requested, expected: landed.id });
+  }
+  if (player.cash < landed.listPrice) {
+    throw new RuleError('INSUFFICIENT_RESOURCES', `buying ${landed.id} costs ${landed.listPrice}; player ${player.id} holds ${player.cash}`, { needed: landed.listPrice, cash: player.cash });
+  }
+  player.cash -= landed.listPrice;
+  draft.owners = { ...draft.owners, [landed.id]: player.id };
+  draft.turnPhase = 'TURN_MANAGEMENT';
+  // via is always DIRECT here — AUCTION purchases arrive with PR 6.
+  return [{ type: 'PROPERTY_PURCHASED', payload: { playerId: player.id, spaceId: landed.id, amount: landed.listPrice, via: 'DIRECT' } }];
+}
+
+/**
+ * Row 6 (TRANSITIONAL — replaced by PR 6): the AUCTION phase and its BID /
+ * PASS_BID commands are PR 6 (spec §12 rows 6–8). Declining in PR 4 parks
+ * the space with the bank, unowned, and the turn proceeds. Zero events is
+ * the honest log — no money or ownership changed. PR 6 replaces this
+ * handler's tail with AUCTION_OPENED + the AUCTION phase, mirroring the
+ * §17.2 replacement-seam pattern.
+ */
+function passToAuctionHandler(draft: GameStateDraft): readonly AnyEventInput[] {
+  if (draft.turnPhase !== 'BUY_DECISION') {
+    throw new RuleError('INVALID_PHASE', `PASS_TO_AUCTION is only valid in BUY_DECISION, not ${String(draft.turnPhase)}`, { phase: draft.turnPhase });
+  }
+  draft.turnPhase = 'TURN_MANAGEMENT';
+  return [];
+}
+
+/** Row 12: end the turn — doubles grant exactly one extra cycle, else hand over. */
+function endTurnHandler(draft: GameStateDraft, command: GameCommand): readonly AnyEventInput[] {
+  if (draft.turnPhase !== 'TURN_MANAGEMENT') {
+    throw new RuleError('INVALID_PHASE', `END_TURN is only valid in TURN_MANAGEMENT, not ${String(draft.turnPhase)}`, { phase: draft.turnPhase });
+  }
+  const player = requirePlayer(draft, command.actorId);
+  const events: AnyEventInput[] = [{ type: 'TURN_ENDED', payload: { playerId: player.id, turn: draft.turn } }];
+  // Doubles extra cycle: same player, same turn ordinal, straight back to
+  // AWAITING_ROLL (spec §4 row 12). The counter cannot be 3 here — the third
+  // consecutive double ends the turn inside ROLL (row 4).
+  // Pending-offer expiry (PR 7) runs only when the turn passes; victory
+  // checks are PR 8's seam at every TURN_ENDED.
+  if (draft.doublesCount > 0 && draft.doublesCount < 3) {
+    draft.turnPhase = 'AWAITING_ROLL';
+    events.push({ type: 'TURN_STARTED', payload: { playerId: player.id, turn: draft.turn } });
+    return events;
+  }
+  events.push(...advanceToNextTurn(draft, player.id));
+  return events;
+}
+
+/** Rules PRs (5–8) add handlers here; the pipeline itself is closed. */
 const HANDLERS: { [T in CommandType]?: CommandHandler } = {
   START_GAME: startGameHandler,
   SAVE_SNAPSHOT: saveSnapshotHandler,
+  ROLL: rollHandler,
+  HOLD: holdHandler,
+  BUY: buyHandler,
+  PASS_TO_AUCTION: passToAuctionHandler,
+  END_TURN: endTurnHandler,
 };
 
 /**
@@ -184,8 +395,12 @@ const HANDLERS: { [T in CommandType]?: CommandHandler } = {
  */
 export function createGame(input: CreateGameInput): CreateGameResult {
   const { gameId, seed, playerIds } = input;
+  const mode = input.mode ?? 'CLASSIC';
   if (typeof gameId !== 'string' || gameId.length === 0) {
     return { ok: false, error: new RuleError('INVALID_SHAPE', 'gameId must be a non-empty string', { field: 'gameId' }) };
+  }
+  if (!(MODE_IDS as readonly string[]).includes(mode)) {
+    return { ok: false, error: new RuleError('INVALID_SHAPE', `mode must be one of ${MODE_IDS.join(', ')}`, { field: 'mode', found: mode }) };
   }
   if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
     return { ok: false, error: new RuleError('INVALID_SHAPE', 'seed must be a uint32', { field: 'seed' }) };
@@ -211,10 +426,23 @@ export function createGame(input: CreateGameInput): CreateGameResult {
     version: 0,
     phase: 'LOBBY',
     turnPhase: null,
+    mode,
+    doublesCount: 0,
+    owners: {},
     rulesVersion: RULES_VERSION,
     seed,
     rngState: seed >>> 0,
-    players: playerIds.map((id, seat) => ({ id, seat, eliminated: false })),
+    // Tokens are PLACED on Gateway Terminal (index 0) — placement is not a
+    // landing and pays no bonus; the first roll grants it only on a pass.
+    players: playerIds.map((id, seat) => ({
+      id,
+      seat,
+      eliminated: false,
+      position: 0,
+      cash: MODES[mode].startingCash,
+      tokens: { HOLD: 0, RENT_HOLIDAY: 0 },
+      skipNextTurn: false,
+    })),
     activePlayerId: null,
     turn: 0,
     lastEventSequence: 0,
