@@ -22,7 +22,7 @@ import { MAX_PLAYERS, MIN_PLAYERS, RULES_VERSION, type GameState, type PlayerId 
 import { RuleError } from './errors';
 import { moveForward, nearestParkIndex } from './movement';
 import { resolveLanding } from './economy';
-import { settleDebtHandler } from './debt';
+import { isDebtHopeless, mortgageHandler, settleDebtHandler, sellUpgradeHandler } from './debt';
 import type { GameStateDraft, DraftPlayer } from './draft';
 import { requirePlayer } from './draft';
 
@@ -96,6 +96,21 @@ export function applyCommand(state: GameState, command: GameCommand, rng: Random
   // Checked before authorization because a finished game admits no actor.
   if (state.phase === 'GAME_OVER') {
     return err(new RuleError('GAME_IS_OVER', 'the game is over; no commands are accepted'));
+  }
+
+  // (6b) Transitional settlement seam (spec §17.2): a debt that cash plus the
+  // maximum liquidation value cannot cover pauses the game — every command
+  // rejects atomically with a typed error and the state stays deep-equal
+  // unchanged. PR 8's SURRENDER replaces this rejection with the waterfall;
+  // negative tests pin both the rejection and the emitted-event ban.
+  if (state.turnPhase === 'SETTLING_DEBT' && state.debt !== null && isDebtHopeless(state, state.debt)) {
+    return err(
+      new RuleError(
+        'DEBT_UNRESOLVABLE',
+        `the ${state.debt.reason.toLowerCase()} debt of ${state.debt.amountDue} exceeds everything player ${state.debt.debtorId} can raise; settlement is impossible in this rules build`,
+        { debtorId: state.debt.debtorId, creditorId: state.debt.creditorId, amountDue: state.debt.amountDue },
+      ),
+    );
   }
 
   // (5) authorization — pure predicate reused verbatim by the Phase 2 server.
@@ -371,6 +386,8 @@ const HANDLERS: { [T in CommandType]?: CommandHandler } = {
   BUY: buyHandler,
   PASS_TO_AUCTION: passToAuctionHandler,
   SETTLE_DEBT: settleDebtHandler,
+  SELL_UPGRADE: sellUpgradeHandler,
+  MORTGAGE: mortgageHandler,
   END_TURN: endTurnHandler,
 };
 

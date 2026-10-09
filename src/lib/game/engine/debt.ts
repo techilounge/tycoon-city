@@ -20,7 +20,7 @@ import { BOARD_SPACES, isPurchasable, type PurchasableSpace } from '../board-v1'
 import type { GameCommand } from '../commands';
 import type { EventInput } from '../events';
 import { mortgageProceeds, upgradeCost, upgradeSellBackProceeds } from '../rules-v1';
-import type { DebtState, GameState, PlayerId } from '../types';
+import type { DebtState, GameState, PlayerId, SpaceId } from '../types';
 import { BANK_ID } from '../types';
 import { RuleError } from './errors';
 import type { GameStateDraft } from './draft';
@@ -122,4 +122,68 @@ export function settleDebtHandler(draft: GameStateDraft, command: GameCommand): 
   draft.debt = null;
   draft.turnPhase = 'TURN_MANAGEMENT';
   return [{ type: 'DEBT_SETTLED', payload: { debtorId: debt.debtorId, creditorId: debt.creditorId, amount: debt.amountDue } }];
+}
+
+/** The registry correlates type and payload; TS cannot carry that through
+ *  the handler union — same documented cast as the reducer's buyHandler.
+ *  Shape validation already ran (pipeline step 1). */
+function spaceIdPayload(command: GameCommand): SpaceId {
+  return (command.payload as { readonly spaceId: SpaceId }).spaceId;
+}
+
+/** The debtor's liquidation commands act on the open debt only — every other
+ *  actor is refused even though hot-seat authorization already narrows to
+ *  the active player (who is the debtor in Phase 1). */
+function requireDebtor(draft: GameStateDraft, command: GameCommand): void {
+  const debt = requireOpenDebt(draft);
+  if (debt.debtorId !== command.actorId) {
+    throw new RuleError('NOT_AUTHORIZED', `only the debtor ${debt.debtorId} may liquidate during settlement`, {
+      debtorId: debt.debtorId,
+      actorId: command.actorId,
+    });
+  }
+}
+
+/**
+ * Row 13 (transitional): the debtor sells one built level back to the bank
+ * for 50% of the price originally paid for a level (spec §7, §8). Cash
+ * rises toward the due amount; the turn stays in SETTLING_DEBT — settlement
+ * itself remains the explicit SETTLE_DEBT command. UPGRADE_SOLD carries the
+ * resulting level after the sale.
+ */
+export function sellUpgradeHandler(draft: GameStateDraft, command: GameCommand): SettlementEventInput[] {
+  requireDebtor(draft, command);
+  const spaceId = spaceIdPayload(command);
+  const space = requireOwnedSpace(draft, command.actorId, spaceId);
+  const level = draft.upgrades[spaceId] ?? 0;
+  if (level < 1) {
+    throw new RuleError('RULE_VIOLATION', `${spaceId} has no built levels to sell`, { spaceId, level });
+  }
+  const proceeds = upgradeSellBackProceeds(upgradeCost(space.listPrice));
+  draft.upgrades = { ...draft.upgrades, [spaceId]: level - 1 };
+  requirePlayer(draft, command.actorId).cash += proceeds;
+  return [{ type: 'UPGRADE_SOLD', payload: { playerId: command.actorId, spaceId, level: level - 1, proceeds } }];
+}
+
+/**
+ * Row 13 (transitional): the debtor mortgages a level-0 space for 50% of
+ * its list price (spec §7, §8). The mortgaged flag is ordinary state — the
+ * 110% unlock cost is PR 8's UNMORTGAGE in TURN_MANAGEMENT; nothing here
+ * lifts a mortgage because the settling debtor only ever raises cash.
+ */
+export function mortgageHandler(draft: GameStateDraft, command: GameCommand): SettlementEventInput[] {
+  requireDebtor(draft, command);
+  const spaceId = spaceIdPayload(command);
+  const space = requireOwnedSpace(draft, command.actorId, spaceId);
+  const level = draft.upgrades[spaceId] ?? 0;
+  if (level > 0) {
+    throw new RuleError('RULE_VIOLATION', `${spaceId} must be level 0 to mortgage — sell the built levels first`, { spaceId, level });
+  }
+  if (draft.mortgaged[spaceId]) {
+    throw new RuleError('RULE_VIOLATION', `${spaceId} is already mortgaged`, { spaceId });
+  }
+  const proceeds = mortgageProceeds(space.listPrice);
+  draft.mortgaged = { ...draft.mortgaged, [spaceId]: true };
+  requirePlayer(draft, command.actorId).cash += proceeds;
+  return [{ type: 'MORTGAGE_TAKEN', payload: { playerId: command.actorId, spaceId, proceeds } }];
 }

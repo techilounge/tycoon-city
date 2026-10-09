@@ -416,13 +416,26 @@ describe('SETTLE_DEBT', () => {
     assert.equal(settled.payload.creditorId, 'BANK');
   });
 
-  it('rejects with INSUFFICIENT_RESOURCES when cash is short — state untouched', () => {
-    const state = settlingState({ cash: 50 });
+  it('rejects with INSUFFICIENT_RESOURCES when cash is short but recovery is possible — state untouched', () => {
+    // $50 cash < $60 due, but the unmortgaged Anvil ($50 mortgage payout)
+    // keeps the debt settleable — the handler's own rejection fires, not the
+    // hopeless-debt veto (which outranks it when recovery is impossible).
+    const state = craftedState({
+      players: [mkPlayer({ id: 'Ada', seat: 0, cash: 50 }), mkPlayer({ id: 'Grace', seat: 1 })],
+      turnPhase: 'SETTLING_DEBT',
+      debt: { debtorId: 'Ada', creditorId: 'Grace', amountDue: 60, reason: 'RENT' },
+      owners: { 'foundry-anvil': 'Ada' },
+    });
     const before = structuredClone(state);
     const result = applyCommand(state, makeCommand(state, 'SETTLE_DEBT'), rngForState(state.rngState));
     assert.ok(!result.ok);
     assert.equal(result.error.code, 'INSUFFICIENT_RESOURCES');
     assert.deepEqual(state, before);
+  });
+
+  it('a hopeless short-cash state rejects DEBT_UNRESOLVABLE before the handler runs', () => {
+    const state = settlingState({ cash: 50 }); // $50 max recoverable < $60 due
+    assert.equal(applyErr(state, 'SETTLE_DEBT'), 'DEBT_UNRESOLVABLE');
   });
 
   it('rejects with INVALID_PHASE outside SETTLING_DEBT', () => {
