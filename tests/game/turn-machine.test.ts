@@ -106,6 +106,10 @@ function craftedState(overrides: {
   turnPhase?: GameState['turnPhase'];
   rngState?: number;
   owners?: Record<string, PlayerId>;
+  upgrades?: Record<string, number>;
+  mortgaged?: Record<string, boolean>;
+  eventDeck?: { drawPile: string[]; discardPile: string[] };
+  debt?: GameState['debt'];
 } = {}): GameState {
   return {
     gameId: 'g-craft',
@@ -115,6 +119,10 @@ function craftedState(overrides: {
     mode: 'CLASSIC',
     doublesCount: overrides.doublesCount ?? 0,
     owners: overrides.owners ?? {},
+    upgrades: overrides.upgrades ?? {},
+    mortgaged: overrides.mortgaged ?? {},
+    eventDeck: overrides.eventDeck ?? { drawPile: [], discardPile: [] },
+    debt: overrides.debt ?? null,
     rulesVersion: RULES_VERSION,
     seed: 1,
     rngState: overrides.rngState ?? 1,
@@ -318,13 +326,14 @@ describe('row 2 — HOLD', () => {
 
 describe('row 3 — start bonus on passing Gateway Terminal', () => {
   it('pays $250 when the move crosses Gateway Terminal', () => {
-    // From position 28 any roll of 4+ crosses 0; find a seed whose sum is 4..12.
+    // From position 28 a roll of 4 crosses 0 and rests on Gateway Terminal —
+    // a landing with no charge, so the bonus is the only cash movement.
     const seed = findSeed(500, (s) => {
       const [a, b] = firstRoll(s);
-      return a + b >= 4;
+      return a + b === 4;
     });
     const [die1, die2] = firstRoll(seed);
-    const state = craftedState({ players: [mkPlayer({ id: 'Ada', seat: 0, position: 28 }), mkPlayer({ id: 'Grace', seat: 1 })] });
+    const state = craftedState({ players: [mkPlayer({ id: 'Ada', seat: 0, position: 28 }), mkPlayer({ id: 'Grace', seat: 1 })], rngState: seed });
 
     const { state: s1, events } = applyOk(state, 'ROLL');
 
@@ -339,7 +348,13 @@ describe('row 3 — start bonus on passing Gateway Terminal', () => {
   });
 
   it('pays nothing on a mid-board move', () => {
-    const state = craftedState({ players: [mkPlayer({ id: 'Ada', seat: 0, position: 5 }), mkPlayer({ id: 'Grace', seat: 1 })] });
+    // A roll of 3 from position 5 rests on Founders Green (a park, index 8)
+    // — no landing charge, so cash is untouched.
+    const seed = findSeed(500, (s) => {
+      const [a, b] = firstRoll(s);
+      return a + b === 3;
+    });
+    const state = craftedState({ players: [mkPlayer({ id: 'Ada', seat: 0, position: 5 }), mkPlayer({ id: 'Grace', seat: 1 })], rngState: seed });
     const { state: s1, events } = applyOk(state, 'ROLL');
     assert.equal(eventTypes(events).includes('START_BONUS_PAID'), false);
     const ada = s1.players.find((p) => p.id === 'Ada');

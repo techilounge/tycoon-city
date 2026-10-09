@@ -21,6 +21,13 @@ import { rngForState, type RandomSource } from '../rng';
 import { MAX_PLAYERS, MIN_PLAYERS, RULES_VERSION, type GameState, type PlayerId } from '../types';
 import { RuleError } from './errors';
 import { moveForward, nearestParkIndex } from './movement';
+import { resolveLanding } from './economy';
+import { isDebtHopeless, mortgageHandler, settleDebtHandler, sellUpgradeHandler } from './debt';
+import type { GameStateDraft, DraftPlayer } from './draft';
+import { requirePlayer } from './draft';
+
+export { requirePlayer } from './draft';
+export type { GameStateDraft, DraftPlayer } from './draft';
 
 /** Success carries the new state, the stamped events, and whether the command
  *  applied (false for idempotent duplicates, which apply nothing). Failure
@@ -91,6 +98,21 @@ export function applyCommand(state: GameState, command: GameCommand, rng: Random
     return err(new RuleError('GAME_IS_OVER', 'the game is over; no commands are accepted'));
   }
 
+  // (6b) Transitional settlement seam (spec §17.2): a debt that cash plus the
+  // maximum liquidation value cannot cover pauses the game — every command
+  // rejects atomically with a typed error and the state stays deep-equal
+  // unchanged. PR 8's SURRENDER replaces this rejection with the waterfall;
+  // negative tests pin both the rejection and the emitted-event ban.
+  if (state.turnPhase === 'SETTLING_DEBT' && state.debt !== null && isDebtHopeless(state, state.debt)) {
+    return err(
+      new RuleError(
+        'DEBT_UNRESOLVABLE',
+        `the ${state.debt.reason.toLowerCase()} debt of ${state.debt.amountDue} exceeds everything player ${state.debt.debtorId} can raise; settlement is impossible in this rules build`,
+        { debtorId: state.debt.debtorId, creditorId: state.debt.creditorId, amountDue: state.debt.amountDue },
+      ),
+    );
+  }
+
   // (5) authorization — pure predicate reused verbatim by the Phase 2 server.
   if (!canAct(state, command)) {
     return err(new RuleError('NOT_AUTHORIZED', `player ${command.actorId} may not issue ${command.type} now`, {
@@ -135,7 +157,10 @@ export function applyCommand(state: GameState, command: GameCommand, rng: Random
  * Pure authorization predicate (spec §10) — shipped now and reused verbatim
  * by the Phase 2 server. PR 2 covers the machinery commands; the remaining
  * actor classes join as their rules land: eligible auction bidders (PR 6),
- * designated trade recipients (PR 7), and the debtor in SETTLING_DEBT (PR 5).
+ * designated trade recipients (PR 7), and debt-settlement actors (PR 5's
+ * settlement commands run in SETTLING_DEBT, where the debtor IS the active
+ * player, so the active-player default already covers them). PR 8 adds the
+ * elimination-auction and estate cases.
  */
 export function canAct(state: GameState, command: GameCommand): boolean {
   const actor = state.players.find((player) => player.id === command.actorId);
@@ -151,26 +176,7 @@ export function canAct(state: GameState, command: GameCommand): boolean {
   }
 }
 
-/**
- * Deeply mutable view of GameState for handler bodies: the reducer clones
- * before any handler runs (mutation here never escapes uncommitted), handlers
- * write through the draft, and the reducer commits it in one piece.
- * Engine-private — never crosses the public boundary — so stripping readonly
- * (including inside the players array) is safe. Handlers mutate player drafts
- * freely; the array itself is never resized.
- */
-type GameStateDraft = {
-  -readonly [K in keyof GameState]: GameState[K] extends readonly (infer T)[]
-    ? T extends object
-      ? Array<{ -readonly [P in keyof T]: T[P] }>
-      : T[]
-    : GameState[K];
-};
-
 type CommandHandler = (draft: GameStateDraft, command: GameCommand, rng: RandomSource) => readonly AnyEventInput[];
-
-/** A player ON the draft: mutable, unlike the published PlayerState. */
-type DraftPlayer = GameStateDraft['players'][number];
 
 function startGameHandler(draft: GameStateDraft): readonly AnyEventInput[] {
   if (draft.phase !== 'LOBBY') {
@@ -187,15 +193,6 @@ function startGameHandler(draft: GameStateDraft): readonly AnyEventInput[] {
 function saveSnapshotHandler(draft: GameStateDraft): readonly AnyEventInput[] {
   // stateVersion is the version this command produces (pre-increment view).
   return [{ type: 'SNAPSHOT_SAVED', payload: { stateVersion: draft.version + 1 } }];
-}
-
-/** Look up a player on the draft after authorization has proven they exist;
- *  a miss is an engine bug (canAct already rejected unknown actors), not a
- *  rule outcome — so a plain Error, never a RuleError. */
-function requirePlayer(draft: GameStateDraft, playerId: PlayerId): DraftPlayer {
-  const player = draft.players.find((p) => p.id === playerId);
-  if (!player) throw new Error(`engine bug: player ${playerId} not found after authorization`);
-  return player;
 }
 
 /**
@@ -278,14 +275,18 @@ function rollHandler(draft: GameStateDraft, command: GameCommand, rng: RandomSou
     player.cash += START_BONUS;
     events.push({ type: 'START_BONUS_PAID', payload: { playerId: player.id, amount: START_BONUS } });
   }
-  // PR 4 resolves only the buy gate: an unowned purchasable space opens the
-  // BUY_DECISION. Rent, taxes, service charges, and Event-Deck draws on the
-  // landed space land with PR 5 (spec §12) — until then they are no-ops.
-  const landed = BOARD_SPACES[move.toIndex];
-  if (isPurchasable(landed) && !(landed.id in draft.owners)) {
-    draft.turnPhase = 'BUY_DECISION';
-  } else {
-    draft.turnPhase = 'TURN_MANAGEMENT';
+  // Row 3 (automatic): advance the token, pay the start bonus on any forward
+  // pass or landing of Gateway Terminal (never on backward movement), then
+  // resolve the landed space — rent, taxes, service charges, and Event-Deck
+  // draws, each of which may pause the turn in SETTLING_DEBT (spec §4 row 3,
+  // §7, §8).
+  events.push(...resolveLanding(draft, player.id, die1 + die2, rng));
+  // A charge that shorted the payer has already set SETTLING_DEBT; otherwise
+  // an unowned purchasable resting space opens the buy decision (row 5) and
+  // everything else proceeds to management (row 9).
+  if (!draft.debt) {
+    const resting = BOARD_SPACES[player.position];
+    draft.turnPhase = isPurchasable(resting) && !(resting.id in draft.owners) ? 'BUY_DECISION' : 'TURN_MANAGEMENT';
   }
   return events;
 }
@@ -384,6 +385,9 @@ const HANDLERS: { [T in CommandType]?: CommandHandler } = {
   HOLD: holdHandler,
   BUY: buyHandler,
   PASS_TO_AUCTION: passToAuctionHandler,
+  SETTLE_DEBT: settleDebtHandler,
+  SELL_UPGRADE: sellUpgradeHandler,
+  MORTGAGE: mortgageHandler,
   END_TURN: endTurnHandler,
 };
 
@@ -429,6 +433,10 @@ export function createGame(input: CreateGameInput): CreateGameResult {
     mode,
     doublesCount: 0,
     owners: {},
+    upgrades: {},
+    mortgaged: {},
+    eventDeck: { drawPile: [], discardPile: [] },
+    debt: null,
     rulesVersion: RULES_VERSION,
     seed,
     rngState: seed >>> 0,

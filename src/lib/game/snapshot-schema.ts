@@ -8,8 +8,9 @@
  * schemaVersion gates deserialization.
  */
 import type { GameState } from './types';
-import { GAME_PHASES, RULES_VERSION, SNAPSHOT_SCHEMA_VERSION, TOKEN_KINDS, TURN_PHASES, isUint32 } from './types';
+import { DEBT_REASONS, GAME_PHASES, RULES_VERSION, SNAPSHOT_SCHEMA_VERSION, TOKEN_KINDS, TURN_PHASES, isUint32 } from './types';
 import { BOARD_LOOP_SIZE, MODE_IDS } from './board-v1';
+import { MAX_UPGRADE_LEVEL } from './rules-v1';
 import { canonicalJson } from './engine/replay';
 
 export interface GameSnapshot {
@@ -151,6 +152,25 @@ export function validateGameStateShape(state: unknown): boolean {
     if (spaceId.length === 0 || typeof ownerId !== 'string' || ownerId.length === 0) return false;
   }
 
+  // Economy state (PR 5): built levels, mortgage flags, deck piles, open debt.
+  if (typeof s.upgrades !== 'object' || s.upgrades === null || Array.isArray(s.upgrades)) return false;
+  for (const [spaceId, level] of Object.entries(s.upgrades)) {
+    if (spaceId.length === 0) return false;
+    if (typeof level !== 'number' || !Number.isInteger(level) || level < 1 || level > MAX_UPGRADE_LEVEL) return false;
+  }
+  if (typeof s.mortgaged !== 'object' || s.mortgaged === null || Array.isArray(s.mortgaged)) return false;
+  for (const [spaceId, mortgaged] of Object.entries(s.mortgaged)) {
+    if (spaceId.length === 0 || typeof mortgaged !== 'boolean') return false;
+  }
+  if (typeof s.eventDeck !== 'object' || s.eventDeck === null || Array.isArray(s.eventDeck)) return false;
+  const deck = s.eventDeck as Record<string, unknown>;
+  for (const pile of ['drawPile', 'discardPile'] as const) {
+    if (!Array.isArray(deck[pile])) return false;
+    for (const cardId of deck[pile] as unknown[]) {
+      if (typeof cardId !== 'string' || cardId.length === 0) return false;
+    }
+  }
+
   if (!Array.isArray(s.players)) return false;
   const seenIds = new Set<string>();
   for (const player of s.players) {
@@ -172,6 +192,17 @@ export function validateGameStateShape(state: unknown): boolean {
     }
   }
   if (s.activePlayerId !== null && (typeof s.activePlayerId !== 'string' || !seenIds.has(s.activePlayerId))) return false;
+
+  // An open debt is exactly a SETTLING_DEBT turn phase (spec §7 invariant).
+  if (s.debt !== null) {
+    if (typeof s.debt !== 'object') return false;
+    const debt = s.debt as Record<string, unknown>;
+    if (typeof debt.debtorId !== 'string' || debt.debtorId.length === 0 || !seenIds.has(debt.debtorId)) return false;
+    if (typeof debt.creditorId !== 'string' || debt.creditorId.length === 0) return false;
+    if (typeof debt.amountDue !== 'number' || !Number.isInteger(debt.amountDue) || debt.amountDue < 1) return false;
+    if (typeof debt.reason !== 'string' || !(DEBT_REASONS as readonly string[]).includes(debt.reason)) return false;
+    if (s.turnPhase !== 'SETTLING_DEBT') return false;
+  }
 
   if (!Array.isArray(s.processedCommandIds)) return false;
   const seenCommandIds = new Set<string>();

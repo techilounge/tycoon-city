@@ -25,6 +25,28 @@ export const MAX_PLAYERS = 6;
 /** Sentinel creditor for amounts owed to the bank rather than to a player (spec §7). */
 export const BANK_ID = 'BANK';
 
+/** A debt or estate creditor: a player, or the bank sentinel (spec §7).
+ *  Canonical declaration lives here (base vocabulary); events.ts re-exports. */
+export type CreditorId = PlayerId | typeof BANK_ID;
+
+/** Why a payment came due — exactly one creditor per debt in Phase 1 (spec §7). */
+export type DebtReason = 'RENT' | 'TAX' | 'SERVICE' | 'CARD';
+
+export const DEBT_REASONS: readonly DebtReason[] = ['RENT', 'TAX', 'SERVICE', 'CARD'];
+
+/**
+ * An open debt (spec §7): recorded the moment a due payment exceeds the
+ * payer's cash, and cleared only by its atomic settlement. The amountDue is
+ * what the resolution computed — a Rent Holiday token, when spent, has
+ * already been applied to it (spec §4).
+ */
+export interface DebtState {
+  readonly debtorId: PlayerId;
+  readonly creditorId: CreditorId;
+  readonly amountDue: number;
+  readonly reason: DebtReason;
+}
+
 /** A player's identity within one game. A plain string keeps every envelope JSON-friendly. */
 export type PlayerId = string;
 
@@ -104,6 +126,20 @@ export interface GameState {
   readonly doublesCount: number;
   /** Space ownership by id; an absent key means the space is with the bank. */
   readonly owners: Readonly<Record<SpaceId, PlayerId>>;
+  /** Built upgrade level by space id; an absent key means level 0. PR 5 reads
+   *  levels for rent; the BUILD command that raises them arrives in PR 8. */
+  readonly upgrades: Readonly<Record<SpaceId, number>>;
+  /** Mortgage flag by space id; an absent key or false means unmortgaged.
+   *  A mortgaged space collects no rent (spec §8). */
+  readonly mortgaged: Readonly<Record<SpaceId, boolean>>;
+  /** Event Deck pile orders as card ids (spec §3): ordinary state, produced
+   *  by rng.shuffle. Empty drawPile means not yet shuffled (or exhausted);
+   *  the draw path shuffles the catalog — or the discard pile, when one
+   *  exists — at the moment a card is needed. */
+  readonly eventDeck: { readonly drawPile: readonly string[]; readonly discardPile: readonly string[] };
+  /** The open debt while SETTLING_DEBT; null otherwise. Non-null exactly when
+   *  turnPhase is SETTLING_DEBT (tested invariant, spec §7). */
+  readonly debt: DebtState | null;
   readonly rulesVersion: number;
   readonly seed: number;
   /** Current Mulberry32 word — the engine's entire randomness state (spec §3). */
@@ -136,9 +172,6 @@ export interface TradeOffer {
 
 /** How the recipient answered a trade offer (spec §6). */
 export type TradeResponse = 'ACCEPT' | 'REJECT' | 'COUNTER';
-
-/** Why a payment came due — exactly one creditor per debt in Phase 1 (spec §7). */
-export type DebtReason = 'RENT' | 'TAX' | 'SERVICE' | 'CARD';
 
 /** Deterministic event metadata: draw RESULTS only, never raw PRNG words (spec §2.2, §3). */
 export interface EventMeta {
