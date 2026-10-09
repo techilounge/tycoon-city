@@ -6,8 +6,9 @@
  * per game and eventIds are composites of gameId and sequence, so replay
  * reproduces the log byte-for-byte.
  */
-import type { DebtReason, EventMeta, PlayerId, SpaceId, TokenKind, TradeOffer, TradeResponse } from './types';
+import type { CreditorId, DebtReason, EventMeta, PlayerId, SpaceId, TokenKind, TradeOffer, TradeResponse } from './types';
 import { BANK_ID, RULES_VERSION } from './types';
+import type { EventCardEffect } from './board-v1';
 import { RuleError } from './engine/errors';
 
 export type TurnSkipReason = 'HOLD_TOKEN' | 'THIRD_DOUBLES';
@@ -17,11 +18,28 @@ export type TaxKind = 'ASSESSMENT_OFFICE' | 'MUNICIPAL_LEVY';
 /** TokenKind is owned by ./types (base vocabulary); re-exported here so the
  *  Event Deck catalog (board-v1) and TOKEN_CONSUMED payloads share one name. */
 export type { TokenKind };
+/** CreditorId is owned by ./types (base vocabulary); re-exported here so
+ *  DEBT_* payload consumers keep one import site. */
+export type { CreditorId };
 export type AuctionOpenReason = 'DECLINED' | 'BANK_ESTATE';
 export type VictoryReason = 'LAST_SOLVENT' | 'NET_WORTH_TARGET' | 'ROUND_CAP';
 
-/** A debt or estate creditor: a player, or the bank sentinel (spec §7). */
-export type CreditorId = PlayerId | typeof BANK_ID;
+/**
+ * The worked arithmetic behind one rent payment (spec §11 explanations):
+ * carried by the RENT_PAID event so the UI prints the derivation without
+ * re-running any formula. amount on the event is the dollars that actually
+ * moved; the detail names the inputs the rent formula combined.
+ */
+export type RentDetail =
+  | {
+      readonly via: 'PROPERTY';
+      /** 10% of the space's list price. */
+      readonly base: number;
+      readonly levelMultiplier: number;
+      readonly districtMultiplier: number;
+    }
+  | { readonly via: 'HUB'; /** How many hubs the owner holds (1 or 2). */
+      readonly hubCount: 1 | 2 };
 
 export interface EventPayloadMap {
   /** A game was created; players are seated in turn order. The seed is deliberately
@@ -36,12 +54,42 @@ export interface EventPayloadMap {
   /** $250 start bonus on any forward pass or landing of Gateway Terminal (spec §4 row 3). */
   readonly START_BONUS_PAID: { readonly playerId: PlayerId; readonly amount: number };
   readonly PROPERTY_PURCHASED: { readonly playerId: PlayerId; readonly spaceId: SpaceId; readonly amount: number; readonly via: PurchaseVia };
-  readonly RENT_PAID: { readonly payerId: PlayerId; readonly ownerId: PlayerId; readonly spaceId: SpaceId; readonly amount: number };
-  readonly TAX_PAID: { readonly playerId: PlayerId; readonly amount: number; readonly taxKind: TaxKind };
-  readonly SERVICE_CHARGED: { readonly playerId: PlayerId; readonly spaceId: SpaceId; readonly amount: number };
+  readonly RENT_PAID: {
+    readonly payerId: PlayerId;
+    readonly ownerId: PlayerId;
+    readonly spaceId: SpaceId;
+    readonly amount: number;
+    /** The worked rent arithmetic as applied (spec §11) — the event carries
+     *  the derivation; the UI never recomputes a formula. */
+    readonly detail: RentDetail;
+    /** True when a Rent Holiday token was spent to halve this payment. */
+    readonly rentHolidayApplied: boolean;
+  };
+  readonly TAX_PAID: {
+    readonly playerId: PlayerId;
+    readonly amount: number;
+    readonly taxKind: TaxKind;
+    /** The cash the levy rate applied to — present only for the Municipal
+     *  Levy (CASH_RATE), so the UI can print "8% of $X = $amount". */
+    readonly levyCashBasis?: number;
+  };
+  readonly SERVICE_CHARGED: {
+    readonly playerId: PlayerId;
+    readonly spaceId: SpaceId;
+    readonly amount: number;
+    /** The dice total and multiplier whose product is the amount (spec §11). */
+    readonly diceTotal: number;
+    readonly multiplier: number;
+  };
   /** Card id rides in meta. */
   readonly CARD_DRAWN: { readonly playerId: PlayerId };
-  readonly CARD_EFFECT_APPLIED: { readonly playerId: PlayerId; readonly cardId: string };
+  readonly CARD_EFFECT_APPLIED: {
+    readonly playerId: PlayerId;
+    readonly cardId: string;
+    /** The full effect as applied — the log stays self-explanatory without a
+     *  catalog join, and money movements carry their own reason. */
+    readonly effect: EventCardEffect;
+  };
   readonly TOKEN_CONSUMED: { readonly playerId: PlayerId; readonly token: TokenKind };
   readonly UPGRADE_BUILT: { readonly playerId: PlayerId; readonly spaceId: SpaceId; readonly level: number; readonly cost: number };
   readonly UPGRADE_SOLD: { readonly playerId: PlayerId; readonly spaceId: SpaceId; readonly level: number; readonly proceeds: number };
