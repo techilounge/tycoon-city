@@ -8,7 +8,8 @@
  * schemaVersion gates deserialization.
  */
 import type { GameState } from './types';
-import { GAME_PHASES, RULES_VERSION, SNAPSHOT_SCHEMA_VERSION, TURN_PHASES, isUint32 } from './types';
+import { GAME_PHASES, RULES_VERSION, SNAPSHOT_SCHEMA_VERSION, TOKEN_KINDS, TURN_PHASES, isUint32 } from './types';
+import { BOARD_LOOP_SIZE, MODE_IDS } from './board-v1';
 import { canonicalJson } from './engine/replay';
 
 export interface GameSnapshot {
@@ -142,6 +143,14 @@ export function validateGameStateShape(state: unknown): boolean {
   if (typeof s.turn !== 'number' || !Number.isInteger(s.turn) || s.turn < 0) return false;
   if (typeof s.lastEventSequence !== 'number' || !Number.isInteger(s.lastEventSequence) || s.lastEventSequence < 0) return false;
 
+  // Turn-machine state (PR 4): mode, doubles counter, ownership.
+  if (typeof s.mode !== 'string' || !(MODE_IDS as readonly string[]).includes(s.mode)) return false;
+  if (typeof s.doublesCount !== 'number' || !Number.isInteger(s.doublesCount) || s.doublesCount < 0 || s.doublesCount > 3) return false;
+  if (typeof s.owners !== 'object' || s.owners === null || Array.isArray(s.owners)) return false;
+  for (const [spaceId, ownerId] of Object.entries(s.owners)) {
+    if (spaceId.length === 0 || typeof ownerId !== 'string' || ownerId.length === 0) return false;
+  }
+
   if (!Array.isArray(s.players)) return false;
   const seenIds = new Set<string>();
   for (const player of s.players) {
@@ -152,6 +161,15 @@ export function validateGameStateShape(state: unknown): boolean {
     seenIds.add(p.id);
     if (typeof p.seat !== 'number' || !Number.isInteger(p.seat) || p.seat < 0) return false;
     if (typeof p.eliminated !== 'boolean') return false;
+    if (typeof p.position !== 'number' || !Number.isInteger(p.position) || p.position < 0 || p.position >= BOARD_LOOP_SIZE) return false;
+    if (typeof p.cash !== 'number' || !Number.isInteger(p.cash) || p.cash < 0) return false;
+    if (typeof p.skipNextTurn !== 'boolean') return false;
+    if (typeof p.tokens !== 'object' || p.tokens === null || Array.isArray(p.tokens)) return false;
+    const tokens = p.tokens as Record<string, unknown>;
+    for (const kind of TOKEN_KINDS) {
+      const count = tokens[kind];
+      if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) return false;
+    }
   }
   if (s.activePlayerId !== null && (typeof s.activePlayerId !== 'string' || !seenIds.has(s.activePlayerId))) return false;
 

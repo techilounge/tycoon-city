@@ -10,6 +10,8 @@
  * PR 10 relocates the demo.
  */
 
+
+import type { ModeId } from './board-v1';
 /** Rules version in effect for this engine build (spec §8). */
 export const RULES_VERSION = 1;
 
@@ -54,12 +56,33 @@ export const TURN_PHASES: readonly TurnPhase[] = [
   'TURN_MANAGEMENT',
 ];
 
-/** Per-player state. Economy fields (cash, tokens) land with board-v1 data (PR 3). */
+/**
+ * A token kind a player can hold (spec §4). Defined here — base vocabulary —
+ * and re-exported by ./events so the Event Deck's GRANT_TOKEN effect can name
+ * it without a types↔events cycle.
+ */
+export type TokenKind = 'HOLD' | 'RENT_HOLIDAY';
+
+export const TOKEN_KINDS: readonly TokenKind[] = ['HOLD', 'RENT_HOLIDAY'];
+
+/** Per-player state. */
 export interface PlayerState {
   readonly id: PlayerId;
   /** Fixed seat, 0-based; defines turn order. */
   readonly seat: number;
   readonly eliminated: boolean;
+  /** Board index of the player's token; 0 is Gateway Terminal. Tokens are
+   *  PLACED here at game start — placement is not a landing and pays no bonus
+   *  (spec §4 row 3 grants the bonus only on movement). */
+  readonly position: number;
+  /** Whole-dollar cash. */
+  readonly cash: number;
+  /** Token counts by kind. PR 4 has no granting path yet — the Event Deck's
+   *  GRANT_TOKEN cards arrive with PR 5 (spec §8). */
+  readonly tokens: Readonly<Record<TokenKind, number>>;
+  /** Set by the third-doubles penalty; consumed when this player's next turn
+   *  is skipped (spec §4 row 4). */
+  readonly skipNextTurn: boolean;
 }
 
 /**
@@ -73,6 +96,14 @@ export interface GameState {
   readonly phase: GamePhase;
   /** Within-turn phase; null outside PLAYING. */
   readonly turnPhase: TurnPhase | null;
+  /** Selected mode, fixed at creation (spec §8); victory targets read from
+   *  MODES when the endgame lands (PR 8). */
+  readonly mode: ModeId;
+  /** Consecutive-doubles counter of the current roller (spec §4). Reset on any
+   *  non-doubles roll, on the third-doubles penalty, and on a turn pass. */
+  readonly doublesCount: number;
+  /** Space ownership by id; an absent key means the space is with the bank. */
+  readonly owners: Readonly<Record<SpaceId, PlayerId>>;
   readonly rulesVersion: number;
   readonly seed: number;
   /** Current Mulberry32 word — the engine's entire randomness state (spec §3). */
@@ -80,7 +111,10 @@ export interface GameState {
   readonly players: readonly PlayerState[];
   /** Player whose turn it is; null in LOBBY and GAME_OVER. */
   readonly activePlayerId: PlayerId | null;
-  /** 1-based turn counter; 0 in LOBBY. */
+  /** Ordinal of the current turn; 0 in LOBBY. Increments when a new turn
+   *  begins for any player — including a skipped one (skips consume an
+   *  ordinal, spec §4) — but NOT across a doubles extra cycle, which shares
+   *  its turn's ordinal (spec §4 row 12). */
   readonly turn: number;
   /** Highest event sequence stamped so far; keeps sequences gapless across the fold (spec §2.2). */
   readonly lastEventSequence: number;
