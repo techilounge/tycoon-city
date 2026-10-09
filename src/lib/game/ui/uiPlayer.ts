@@ -5,7 +5,7 @@
  */
 import { BOARD_SPACES, isPurchasable, type BoardSpace } from '../board-v1';
 import type { AnyGameEvent } from '../events';
-import type { GameState, SpaceId } from '../types';
+import type { GameState, PlayerId, SpaceId } from '../types';
 
 /** One restrained color per seat order — presentation-only, never game state. */
 export const PLAYER_COLORS = ['#39b8a4', '#d8b86b', '#7fb1d8', '#c98bb0', '#8fd17f', '#d8a06b'] as const;
@@ -36,16 +36,49 @@ export interface DiceRoll {
   readonly isDoubles: boolean;
 }
 
-/** The most recent roll's dice (draw results ride in event meta, spec §2.2). */
-export function lastDice(events: readonly AnyGameEvent[]): DiceRoll | null {
+export interface TurnDice {
+  readonly roll: DiceRoll;
+  /** Event index of the roll — stable React key for the dice animation. */
+  readonly key: number;
+}
+
+/**
+ * The current turn's dice, or null before the active player has rolled.
+ * Scans back to the last TURN_STARTED: rolls from previous turns must never
+ * leak across a handover or into a doubles extra cycle (playtest fix).
+ */
+export function currentTurnDice(events: readonly AnyGameEvent[]): TurnDice | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
     if (event.type === 'DICE_ROLLED' && event.meta.dice) {
       const [die1, die2] = event.meta.dice;
-      return { die1, die2, isDoubles: die1 === die2 };
+      return { roll: { die1, die2, isDoubles: die1 === die2 }, key: i };
     }
+    if (event.type === 'TURN_STARTED') return null;
   }
   return null;
+}
+
+export interface TileCaption {
+  /** Main caption: the list price for purchasable spaces, else the kind name. */
+  readonly label: string;
+  /** "Owned by <player>" — set exactly when a purchasable space is owned. */
+  readonly ownerLine: string | null;
+  /** The owning player's id, for seat coloring; null when unowned. */
+  readonly ownerId: PlayerId | null;
+}
+
+/**
+ * Consistent owned-tile caption (playtest fix): every owned purchasable space
+ * reads "<price> · Owned by <player>" — ownership is never tooltip-only, and
+ * the list price never visually disappears behind an ownership cue.
+ */
+export function tileCaption(space: BoardSpace, state: GameState): TileCaption {
+  if (!isPurchasable(space)) return { label: space.kind, ownerLine: null, ownerId: null };
+  const price = '$' + space.listPrice;
+  const ownerId = state.owners[space.id] ?? null;
+  if (ownerId === null) return { label: price, ownerLine: null, ownerId: null };
+  return { label: price, ownerLine: 'Owned by ' + ownerId, ownerId };
 }
 
 function spaceName(spaceId: SpaceId): string {

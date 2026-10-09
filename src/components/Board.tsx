@@ -1,6 +1,6 @@
 import type { GameState } from '@/lib/game/types';
 import { BOARD_SPACES, type BoardSpace } from '@/lib/game/board-v1';
-import { playerColor } from '@/lib/game/ui/uiPlayer';
+import { playerColor, tileCaption } from '@/lib/game/ui/uiPlayer';
 
 /**
  * Minimal slice board (spec §12 PR 4): a responsive grid over the 32 board
@@ -22,19 +22,6 @@ function spaceBg(space: BoardSpace): string {
   }
 }
 
-function spaceLabel(space: BoardSpace): string {
-  switch (space.kind) {
-    case 'PROPERTY':
-    case 'HUB':
-    case 'SERVICE':
-      return `$${space.listPrice}`;
-    case 'START':
-      return 'START';
-    default:
-      return space.kind;
-  }
-}
-
 export function Board({ state }: { state: GameState }) {
   const seatOf = new Map(state.players.map((p, i) => [p.id, i]));
   const active = state.players.find((p) => p.id === state.activePlayerId);
@@ -42,10 +29,10 @@ export function Board({ state }: { state: GameState }) {
     <div className="panel p-3 sm:p-5">
       <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5 sm:gap-2">
         {BOARD_SPACES.map((space, index) => {
-          const ownerId = state.owners[space.id];
-          const ownerSeat = ownerId !== undefined ? seatOf.get(ownerId) : undefined;
           const tokens = state.players.filter((p) => p.position === index);
           const isActive = active !== undefined && active.position === index && state.phase === 'PLAYING';
+          const caption = tileCaption(space, state);
+          const ownerSeat = caption.ownerId !== null ? seatOf.get(caption.ownerId) : undefined;
           return (
             <div
               key={space.id}
@@ -55,7 +42,12 @@ export function Board({ state }: { state: GameState }) {
               } ${spaceBg(space)}`}
             >
               <div className="text-[10px] font-semibold leading-tight sm:text-xs">{space.name}</div>
-              <div className="text-[10px] text-[#d5ba78] sm:text-xs">{spaceLabel(space)}</div>
+              <div className="text-[10px] text-[#d5ba78] sm:text-xs">
+                {caption.label}
+                {caption.ownerLine !== null && caption.ownerId !== null && (
+                  <span style={{ color: playerColor(seatOf.get(caption.ownerId) ?? 0) }}> · {caption.ownerLine}</span>
+                )}
+              </div>
               <div className="flex flex-wrap gap-1">
                 {tokens.map((p) => (
                   <span

@@ -6,7 +6,7 @@ import { Board } from '@/components/Board';
 import type { CommandType, GameCommand } from '@/lib/game/commands';
 import { LocalCommandSink } from '@/lib/game/engine/transport';
 import type { AnyGameEvent } from '@/lib/game/events';
-import { PLAYER_COLORS, buyOffer, describeEvent, lastDice } from '@/lib/game/ui/uiPlayer';
+import { PLAYER_COLORS, buyOffer, currentTurnDice, describeEvent } from '@/lib/game/ui/uiPlayer';
 import type { GameState } from '@/lib/game/types';
 
 /**
@@ -21,6 +21,7 @@ import type { GameState } from '@/lib/game/types';
 
 const PLAYER_NAMES = ['Ada', 'Grace'] as const;
 const HISTORY_WINDOW = 12;
+const MAX_SEED = 0xffffffff;
 
 function randomSeed(): number {
   const buf = new Uint32Array(1);
@@ -28,8 +29,15 @@ function randomSeed(): number {
   return buf[0];
 }
 
+/** Whole-number seeds in [0, 2^32-1] only — the engine's seed space (spec §3). */
+function parseSeed(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const seed = Number.parseInt(trimmed, 10);
+  return seed <= MAX_SEED ? seed : null;
+}
+
 export default function GamePage() {
-  const [gameKey, setGameKey] = useState(0);
   const [sink, setSink] = useState<LocalCommandSink | null>(null);
   const [state, setState] = useState<GameState | null>(null);
   const [history, setHistory] = useState<readonly AnyGameEvent[]>([]);
@@ -37,29 +45,80 @@ export default function GamePage() {
   const [error, setError] = useState<string | null>(null);
   /** Hot-seat privacy (spec §11): false hides the board until the next player takes the handoff. */
   const [revealed, setRevealed] = useState(true);
+  /** Draft seed for the next game; overridable in the lobby (spec §3). */
+  const [seedDraft, setSeedDraft] = useState(() => String(randomSeed()));
+  const unsubscribeRef = useRef<(() => void) | null>(null);
   const commandCounter = useRef(0);
+  const gameCounter = useRef(0);
 
-  // The sink is created client-side (seeded randomness is a browser concern);
-  // gameKey remounts it for a fresh game. The subscription replays the log
-  // from sequence 1, so history and state stay in sync through one seam.
-  useEffect(() => {
+  useEffect(() => () => unsubscribeRef.current?.(), []);
+
+  const applyResult = useCallback((result: Awaited<ReturnType<LocalCommandSink['submit']>>, previousPlayer: string | null) => {
+    if (!result.ok) {
+      setError(`${result.error.code}: ${result.error.message}`);
+      return;
+    }
+    if (!result.applied) return; // idempotent duplicate — nothing changed
+    setState(result.state);
+    // Handoff gate: pause for the next player when the turn changes hands.
+    // Game start is not a handoff — the first TURN_STARTED reveals controls
+    // directly (spec §11).
+    if (result.state.phase === 'PLAYING' && previousPlayer !== null && result.state.activePlayerId !== previousPlayer) {
+      setRevealed(false);
+    }
+  }, []);
+
+  /** Creates the game with the lobby's seed, then starts it in one action. */
+  const startGame = useCallback(async () => {
+    const seed = parseSeed(seedDraft);
+    if (seed === null) return;
+    const gameId = `g-local-${++gameCounter.current}`;
     const next = LocalCommandSink.create({
-      gameId: `g-local-${gameKey + 1}`,
-      seed: randomSeed(),
+      gameId,
+      seed,
       playerIds: [...PLAYER_NAMES],
+    });
+    unsubscribeRef.current?.();
+    // The subscription replays the log from sequence 1, so history and state
+    // stay in sync through one seam.
+    unsubscribeRef.current = next.events.subscribe(gameId, 1, (event) => {
+      setHistory((h) => [...h, event]);
+      setState(next.state());
     });
     setSink(next);
     setState(next.state());
     setHistory([]);
+    setPending(true);
+    setError(null);
+    setRevealed(true);
+    const fresh = next.state();
+    const result = await next.submit({
+      commandId: 'ui-start',
+      gameId: fresh.gameId,
+      actorId: fresh.players[0].id,
+      expectedVersion: fresh.version,
+      type: 'START_GAME',
+      payload: {},
+    } as GameCommand);
+    setPending(false);
+    if (!result.ok) {
+      setError(`${result.error.code}: ${result.error.message}`);
+      return;
+    }
+    if (result.applied) setState(result.state);
+  }, [seedDraft]);
+
+  const newGame = useCallback(() => {
+    unsubscribeRef.current?.();
+    unsubscribeRef.current = null;
+    setSink(null);
+    setState(null);
+    setHistory([]);
     setPending(false);
     setError(null);
     setRevealed(true);
-    const unsubscribe = next.events.subscribe(next.state().gameId, 1, (event) => {
-      setHistory((h) => [...h, event]);
-      setState(next.state());
-    });
-    return unsubscribe;
-  }, [gameKey]);
+    setSeedDraft(String(randomSeed()));
+  }, []);
 
   const submit = useCallback(
     async (type: CommandType, payload: Record<string, unknown> = {}) => {
@@ -77,35 +136,65 @@ export default function GamePage() {
       } as GameCommand;
       const result = await sink.submit(command);
       setPending(false);
-      if (!result.ok) {
-        setError(`${result.error.code}: ${result.error.message}`);
-        return;
-      }
-      if (!result.applied) return; // idempotent duplicate — nothing changed
-      const previousPlayer = state.activePlayerId;
-      setState(result.state);
-      // Handoff gate: pause for the next player when the turn changes hands.
-      // Game start is not a handoff — LOBBY has no active player (null), so
-      // the first TURN_STARTED reveals controls directly (spec §11).
-      if (result.state.phase === 'PLAYING' && previousPlayer !== null && result.state.activePlayerId !== previousPlayer) {
-        setRevealed(false);
-      }
+      applyResult(result, state.activePlayerId);
     },
-    [sink, state, pending],
+    [sink, state, pending, applyResult],
   );
 
-  const dice = useMemo(() => lastDice(history), [history]);
-  const diceKey = useMemo(() => {
-    for (let i = history.length - 1; i >= 0; i--) {
-      if (history[i].type === 'DICE_ROLLED') return i;
-    }
-    return -1;
-  }, [history]);
+  const turnDice = useMemo(() => currentTurnDice(history), [history]);
+  const dice = turnDice?.roll ?? null;
+  const diceKey = turnDice?.key ?? -1;
 
   if (!state) {
+    const seed = parseSeed(seedDraft);
     return (
-      <main className="mx-auto max-w-6xl px-5 py-10">
-        <p className="text-slate-400">Preparing the game…</p>
+      <main className="mx-auto min-h-screen max-w-6xl px-4 py-6 sm:px-5 sm:py-8">
+        <nav className="flex flex-wrap items-center justify-between gap-3">
+          <Link href="/" className="text-xl font-black tracking-wide text-[#e3bd72]">
+            TYCOON CITY
+          </Link>
+        </nav>
+
+        <h1 className="mt-6 text-3xl font-black tracking-tight sm:text-4xl">Local Game</h1>
+        <p className="mt-1 text-sm text-slate-400">Hot-seat preview · 2 players</p>
+
+        <section className="panel mt-6 p-6" aria-label="Game start">
+          <h2 className="text-xl font-bold">Ready to begin</h2>
+          <p className="mt-2 text-sm text-slate-300">
+            {PLAYER_NAMES.join(' and ')} take turns on this device. Each turn: roll, move, buy or decline, then end the turn.
+          </p>
+          <div className="mt-4 flex flex-col gap-1.5">
+            <label htmlFor="seed-input" className="text-xs text-slate-400">
+              Seed — same seed and same moves reproduce this game exactly
+            </label>
+            <input
+              id="seed-input"
+              inputMode="numeric"
+              autoComplete="off"
+              value={seedDraft}
+              onChange={(e) => setSeedDraft(e.target.value)}
+              aria-invalid={seed === null}
+              className="w-44 rounded-lg border border-[#365158] bg-[#1b3038] px-3 py-2 text-sm text-slate-100 outline-none focus:border-[#eacb7b] focus:ring-2 focus:ring-[#eacb7b]"
+            />
+            {seed === null && (
+              <p className="text-xs text-[#e8a87c]" role="alert">
+                Enter a whole number from 0 to 4294967295.
+              </p>
+            )}
+          </div>
+          <button className="cta mt-4" onClick={() => void startGame()} disabled={pending || seed === null}>
+            Start game
+          </button>
+        </section>
+
+        {error && (
+          <div role="alert" className="panel mt-4 border-[#a3552f] p-4 text-sm text-[#e8a87c]">
+            {error}
+            <button className="ml-3 underline" onClick={() => setError(null)}>
+              dismiss
+            </button>
+          </div>
+        )}
       </main>
     );
   }
@@ -143,7 +232,7 @@ export default function GamePage() {
           <span className="text-xs text-slate-400" title="Deterministic seed — same seed and same moves reproduce this game exactly">
             seed {state.seed}
           </span>
-          <button className="secondary text-sm" onClick={() => setGameKey((k) => k + 1)} disabled={pending}>
+          <button className="secondary text-sm" onClick={newGame} disabled={pending}>
             New game
           </button>
         </div>
@@ -153,18 +242,6 @@ export default function GamePage() {
       <p className="mt-1 text-sm text-slate-400">
         {state.phase === 'LOBBY' ? 'Hot-seat preview · 2 players' : `Round ${round} · ${state.players.length} players · hot-seat`}
       </p>
-
-      {state.phase === 'LOBBY' && (
-        <section className="panel mt-6 p-6" aria-label="Game start">
-          <h2 className="text-xl font-bold">Ready to begin</h2>
-          <p className="mt-2 text-sm text-slate-300">
-            {PLAYER_NAMES.join(' and ')} take turns on this device. Each turn: roll, move, buy or decline, then end the turn.
-          </p>
-          <button className="cta mt-4" onClick={() => submit('START_GAME')} disabled={pending}>
-            Start game
-          </button>
-        </section>
-      )}
 
       {state.phase === 'PLAYING' && (
         <div className="mt-6 grid gap-4 lg:grid-cols-[2fr_1fr]">
