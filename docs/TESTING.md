@@ -18,7 +18,9 @@ npm run sim -- --seeds=20     # simulation smoke matrix (CI-enforced)
 
 | Path | Covers |
 |---|---|
-| `tests/*.test.ts`, `tests/game/*.test.ts` | Engine contracts: envelopes, idempotency, version conflicts, replay-hash equality, movement, economy, auctions, trades, development, bankruptcy, victory |
+| `tests/starter.test.ts` | The migrated starter test (Phase 0 baseline, kept as a CI canary) |
+| `tests/game/*.test.ts` | Engine contracts: envelopes, idempotency, version conflicts, replay-hash equality, movement, economy, auctions, trades, development, bankruptcy, victory |
+| `tests/game/ui-*.test.ts` | UI-adjacent pure logic: legal-command derivation (action dock), board layout, modal priority, save/resume persistence, presentation rules, trade composition |
 | `tests/sim/harness.test.ts` | Balance-simulation harness: strategy profile contracts, seed derivation, a full micro-matrix with all §17.3 demonstration assertions, rerun determinism |
 | `tools/sim/**` | The harness itself (`npm run sim`) — not imported by the app |
 
@@ -75,5 +77,13 @@ pressure without the cost of the full 500-seed matrix.
 
 - `tests/sim/harness.test.ts` asserts rerun determinism directly: the same
   cell run twice must produce byte-identical summaries.
-- Snapshot compatibility is schema-gated (`schemaVersion`); loading an
-  unknown snapshot version refuses with a typed error rather than guessing.
+- Snapshot compatibility is schema-gated (`schemaVersion`, currently **v2**).
+  Loading an unknown snapshot version refuses with a typed error
+  (`UNKNOWN_SCHEMA_VERSION`) rather than guessing; the persistence tests
+  (`tests/game/ui-persistence.test.ts`, `tests/game/snapshot.test.ts`) pin the
+  round-trip, the refusal of older **and newer** versions, and the refusal of
+  malformed or tampered payloads. Schema history — v1 (engine foundation) →
+  v2 (round tracking + persisted estate-sale queue) — is specified in
+  [`GAME_STATE_MACHINE.md` §9](GAME_STATE_MACHINE.md#9-snapshot-schema-history).
+  There is no migration from v1: unsupported saves offer a new game, never a
+  silent load.
