@@ -1,8 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Board } from '@/components/Board';
+import { MODES, MODE_IDS, type ModeId } from '@/lib/game/board-v1';
 import type { CommandType, GameCommand } from '@/lib/game/commands';
 import { LocalCommandSink } from '@/lib/game/engine/transport';
 import type { AnyGameEvent } from '@/lib/game/events';
@@ -10,34 +12,78 @@ import { PLAYER_COLORS, buyOffer, currentTurnDice, describeEvent } from '@/lib/g
 import type { GameState } from '@/lib/game/types';
 
 /**
- * The Phase 1 vertical slice (spec §12 PR 4): a minimal playable local
- * hot-seat game. The page submits commands through the LocalCommandSink and
- * renders events from the EventSource seam — the §2.3 transport contract
- * Phase 2 swaps for a WebSocket server without touching this page's logic.
- *
- * Slice scope: ROLL, HOLD, buy-or-decline, END_TURN. Rent, building,
- * auctions, and trading arrive with PRs 5–8; the perimeter board with PR 10.
+ * The Phase 1 game screen (spec §12 PR 4): a minimal playable local
+ * hot-seat game. Setup lives in the /lobby — this page consumes its config
+ * (players, mode, seed) from the URL and starts lazily on the owner's click.
+ * The page submits commands through the LocalCommandSink and renders events
+ * from the EventSource seam — the §2.3 transport contract Phase 2 swaps for a
+ * WebSocket server without touching this page's logic.
  */
 
-const PLAYER_NAMES = ['Ada', 'Grace'] as const;
 const HISTORY_WINDOW = 12;
-const MAX_SEED = 0xffffffff;
 
-function randomSeed(): number {
-  const buf = new Uint32Array(1);
-  crypto.getRandomValues(buf);
-  return buf[0];
+/** Lobby handoff config, validated before any game exists. */
+interface GameConfig {
+  readonly playerIds: readonly string[];
+  readonly mode: ModeId;
+  readonly seed: number;
 }
 
-/** Whole-number seeds in [0, 2^32-1] only — the engine's seed space (spec §3). */
-function parseSeed(raw: string): number | null {
-  const trimmed = raw.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const seed = Number.parseInt(trimmed, 10);
-  return seed <= MAX_SEED ? seed : null;
+const SEED_MAX = 0xffffffff;
+
+function parseGameConfig(params: URLSearchParams): GameConfig | null {
+  const playerIds = (params.get('players') ?? '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  const mode = params.get('mode') ?? '';
+  const seedRaw = params.get('seed') ?? '';
+  if (
+    playerIds.length < 2 ||
+    playerIds.length > 6 ||
+    new Set(playerIds).size !== playerIds.length ||
+    !(MODE_IDS as readonly string[]).includes(mode) ||
+    !/^\d+$/.test(seedRaw)
+  ) {
+    return null;
+  }
+  const seed = Number.parseInt(seedRaw, 10);
+  if (seed > SEED_MAX) return null;
+  return { playerIds, mode: mode as ModeId, seed };
+}
+
+function ConfigProblem() {
+  return (
+    <main className="mx-auto min-h-screen max-w-3xl px-4 py-6 sm:px-5 sm:py-8">
+      <Link href="/" className="text-xl font-black tracking-wide text-[#e3bd72]">
+        TYCOON CITY
+      </Link>
+      <section className="panel mt-8 p-8 text-center" aria-label="Missing game setup">
+        <h1 className="text-2xl font-black">No game is set up</h1>
+        <p className="mt-2 text-sm text-slate-300">
+          Local games start in the lobby — choose your players, mode, and seed there.
+        </p>
+        <Link href="/lobby" className="cta mt-6 inline-block">
+          Go to the lobby
+        </Link>
+      </section>
+    </main>
+  );
 }
 
 export default function GamePage() {
+  return (
+    <Suspense fallback={null}>
+      <GameScreen />
+    </Suspense>
+  );
+}
+
+function GameScreen() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const config = useMemo(() => parseGameConfig(searchParams), [searchParams]);
+
   const [sink, setSink] = useState<LocalCommandSink | null>(null);
   const [state, setState] = useState<GameState | null>(null);
   const [history, setHistory] = useState<readonly AnyGameEvent[]>([]);
@@ -45,8 +91,6 @@ export default function GamePage() {
   const [error, setError] = useState<string | null>(null);
   /** Hot-seat privacy (spec §11): false hides the board until the next player takes the handoff. */
   const [revealed, setRevealed] = useState(true);
-  /** Draft seed for the next game; overridable in the lobby (spec §3). */
-  const [seedDraft, setSeedDraft] = useState(() => String(randomSeed()));
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const commandCounter = useRef(0);
   const gameCounter = useRef(0);
@@ -68,15 +112,15 @@ export default function GamePage() {
     }
   }, []);
 
-  /** Creates the game with the lobby's seed, then starts it in one action. */
+  /** Creates the game with the lobby's config, then starts it in one action. */
   const startGame = useCallback(async () => {
-    const seed = parseSeed(seedDraft);
-    if (seed === null) return;
+    if (!config) return;
     const gameId = `g-local-${++gameCounter.current}`;
     const next = LocalCommandSink.create({
       gameId,
-      seed,
-      playerIds: [...PLAYER_NAMES],
+      seed: config.seed,
+      playerIds: [...config.playerIds],
+      mode: config.mode,
     });
     unsubscribeRef.current?.();
     // The subscription replays the log from sequence 1, so history and state
@@ -106,19 +150,13 @@ export default function GamePage() {
       return;
     }
     if (result.applied) setState(result.state);
-  }, [seedDraft]);
+  }, [config]);
 
-  const newGame = useCallback(() => {
+  const backToLobby = useCallback(() => {
     unsubscribeRef.current?.();
     unsubscribeRef.current = null;
-    setSink(null);
-    setState(null);
-    setHistory([]);
-    setPending(false);
-    setError(null);
-    setRevealed(true);
-    setSeedDraft(String(randomSeed()));
-  }, []);
+    router.push('/lobby');
+  }, [router]);
 
   const submit = useCallback(
     async (type: CommandType, payload: Record<string, unknown> = {}) => {
@@ -141,12 +179,14 @@ export default function GamePage() {
     [sink, state, pending, applyResult],
   );
 
-  const turnDice = useMemo(() => currentTurnDice(history), [history]);
+  if (!config) return <ConfigProblem />;
+
+  const turnDice = state ? currentTurnDice(history) : null;
   const dice = turnDice?.roll ?? null;
   const diceKey = turnDice?.key ?? -1;
 
   if (!state) {
-    const seed = parseSeed(seedDraft);
+    const modeConfig = MODES[config.mode];
     return (
       <main className="mx-auto min-h-screen max-w-6xl px-4 py-6 sm:px-5 sm:py-8">
         <nav className="flex flex-wrap items-center justify-between gap-3">
@@ -155,34 +195,16 @@ export default function GamePage() {
           </Link>
         </nav>
 
-        <h1 className="mt-6 text-3xl font-black tracking-tight sm:text-4xl">Local Game</h1>
-        <p className="mt-1 text-sm text-slate-400">Hot-seat preview · 2 players</p>
+        <h1 className="mt-6 text-3xl font-black tracking-tight sm:text-4xl">Ready to begin</h1>
+        <p className="mt-1 text-sm text-slate-400">
+          {config.playerIds.length} players · {modeConfig.name} · seed {config.seed}
+        </p>
 
         <section className="panel mt-6 p-6" aria-label="Game start">
-          <h2 className="text-xl font-bold">Ready to begin</h2>
-          <p className="mt-2 text-sm text-slate-300">
-            {PLAYER_NAMES.join(' and ')} take turns on this device. Each turn: roll, move, buy or decline, then end the turn.
+          <p className="text-sm text-slate-300">
+            {config.playerIds.join(', ')} take turns on this device. Each turn: roll, move, resolve the space, then end the turn.
           </p>
-          <div className="mt-4 flex flex-col gap-1.5">
-            <label htmlFor="seed-input" className="text-xs text-slate-400">
-              Seed — same seed and same moves reproduce this game exactly
-            </label>
-            <input
-              id="seed-input"
-              inputMode="numeric"
-              autoComplete="off"
-              value={seedDraft}
-              onChange={(e) => setSeedDraft(e.target.value)}
-              aria-invalid={seed === null}
-              className="w-44 rounded-lg border border-[#365158] bg-[#1b3038] px-3 py-2 text-sm text-slate-100 outline-none focus:border-[#eacb7b] focus:ring-2 focus:ring-[#eacb7b]"
-            />
-            {seed === null && (
-              <p className="text-xs text-[#e8a87c]" role="alert">
-                Enter a whole number from 0 to 4294967295.
-              </p>
-            )}
-          </div>
-          <button className="cta mt-4" onClick={() => void startGame()} disabled={pending || seed === null}>
+          <button className="cta mt-4" onClick={() => void startGame()} disabled={pending}>
             Start game
           </button>
         </section>
@@ -202,7 +224,6 @@ export default function GamePage() {
   const activePlayer = state.players.find((p) => p.id === state.activePlayerId);
   const offer = buyOffer(state);
   const seatOf = new Map(state.players.map((p, i) => [p.id, i]));
-  const round = Math.ceil(state.turn / state.players.length);
   const logLines = history
     .map(describeEvent)
     .filter((line): line is string => line !== null)
@@ -232,7 +253,7 @@ export default function GamePage() {
           <span className="text-xs text-slate-400" title="Deterministic seed — same seed and same moves reproduce this game exactly">
             seed {state.seed}
           </span>
-          <button className="secondary text-sm" onClick={newGame} disabled={pending}>
+          <button className="secondary text-sm" onClick={backToLobby} disabled={pending}>
             New game
           </button>
         </div>
@@ -240,7 +261,9 @@ export default function GamePage() {
 
       <h1 className="mt-6 text-3xl font-black tracking-tight sm:text-4xl">Local Game</h1>
       <p className="mt-1 text-sm text-slate-400">
-        {state.phase === 'LOBBY' ? 'Hot-seat preview · 2 players' : `Round ${round} · ${state.players.length} players · hot-seat`}
+        {state.phase === 'LOBBY'
+          ? `${MODES[state.mode].name} · ${state.players.length} players · hot-seat`
+          : `Round ${state.round} · ${MODES[state.mode].name} · ${state.players.length} players · hot-seat`}
       </p>
 
       {state.phase === 'PLAYING' && (
@@ -375,7 +398,7 @@ export default function GamePage() {
       {state.phase === 'GAME_OVER' && (
         <section className="panel mt-6 p-8 text-center" aria-label="Game over">
           <h2 className="text-2xl font-black text-[#e3bd72]">Game over</h2>
-          <p className="mt-2 text-slate-300">End conditions arrive with a later update — start a new game to keep playing.</p>
+          <p className="mt-2 text-slate-300">Victory screens arrive with a later update — start a new game to keep playing.</p>
         </section>
       )}
 
