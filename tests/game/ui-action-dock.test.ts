@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { BOARD_SPACES, isPurchasable } from '../../src/lib/game/board-v1';
 import { RULES_VERSION, type GameState, type PlayerState } from '../../src/lib/game/types';
-import { auctionPanel, dockGroups, districtComplete, nextBidAmount, tradePanel, turnHeadline } from '../../src/lib/game/ui/actionDock';
+import { auctionPanel, dockGroups, districtComplete, gameOverSummary, nextBidAmount, tradePanel, turnHeadline, victoryReasonText } from '../../src/lib/game/ui/actionDock';
+import type { AnyGameEvent } from '../../src/lib/game/events';
 import { upgradeCost, upgradeSellBackProceeds } from '../../src/lib/game/rules-v1';
 
 /** The action-dock projection (spec §11, §12 PR 10): legal commands + reasons, per phase. */
@@ -177,6 +178,8 @@ describe('auctionPanel', () => {
     );
     assert.equal(panel.bidders[0].minBid, 40);
     assert.equal(panel.bidders[0].bidDisabledReason, null);
+    assert.match(panel.bidders[0].passDisabledReason ?? '', /standing bid/);
+    assert.equal(panel.bidders[1].passDisabledReason, null);
     assert.equal(auctionPanel(craftedState({})), null);
   });
 
@@ -235,5 +238,35 @@ describe('districtComplete', () => {
     assert.equal(districtComplete(craftedState({ owners }), district, 'Ada'), true);
     owners[districtSpaces[0].id] = 'Grace';
     assert.equal(districtComplete(craftedState({ owners }), district, 'Ada'), false);
+  });
+});
+
+describe('gameOverSummary', () => {
+  const ended: AnyGameEvent = {
+    eventId: 'e-1',
+    gameId: 'g-1',
+    commandId: 'cmd-1',
+    sequence: 9,
+    rulesVersion: RULES_VERSION,
+    type: 'GAME_ENDED',
+    payload: { winnerIds: ['Ada'], reason: 'NET_WORTH_TARGET' },
+    meta: {},
+  };
+
+  it('reads the winner and reason from the terminal event and null before it fires', () => {
+    const over = gameOverSummary([ended]);
+    assert.deepEqual(over, { winnerIds: ['Ada'], reason: 'NET_WORTH_TARGET' });
+    assert.equal(gameOverSummary([]), null);
+  });
+
+  it('takes the LAST game-ended event when replayed logs contain earlier endings', () => {
+    const earlier: AnyGameEvent = { ...ended, sequence: 2, payload: { winnerIds: ['Linus'], reason: 'ROUND_CAP' } };
+    assert.deepEqual(gameOverSummary([earlier, ended]), { winnerIds: ['Ada'], reason: 'NET_WORTH_TARGET' });
+  });
+
+  it('renders every victory reason as human text', () => {
+    assert.equal(victoryReasonText('LAST_SOLVENT'), 'the last solvent player standing');
+    assert.equal(victoryReasonText('NET_WORTH_TARGET'), 'reached the net-worth target');
+    assert.equal(victoryReasonText('ROUND_CAP'), 'richest when the round cap was reached');
   });
 });

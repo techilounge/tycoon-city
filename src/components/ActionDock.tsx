@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { GameState } from '@/lib/game/types';
 import type { DockAction } from '@/lib/game/ui/actionDock';
+import type { PlayerId } from '@/lib/game/types';
 import { auctionPanel, dockGroups, tradePanel } from '@/lib/game/ui/actionDock';
 import { playerColor } from '@/lib/game/ui/uiPlayer';
 
@@ -13,7 +14,7 @@ import { playerColor } from '@/lib/game/ui/uiPlayer';
  * Rendering-only: legality comes from the pure dock module.
  */
 
-type Submit = (type: DockAction['command'], payload?: Record<string, unknown>) => void;
+type Submit = (type: DockAction['command'], payload?: Record<string, unknown>, actorId?: PlayerId) => void;
 
 function ActionButton({ action, pending, onSubmit }: { action: DockAction; pending: boolean; onSubmit: Submit }) {
   const [armed, setArmed] = useState(false);
@@ -33,7 +34,7 @@ function ActionButton({ action, pending, onSubmit }: { action: DockAction; pendi
             return;
           }
           setArmed(false);
-          onSubmit(action.command, action.payload);
+          onSubmit(action.command, action.payload, action.actorId);
         }}
         onBlur={() => setArmed(false)}
       >
@@ -44,7 +45,7 @@ function ActionButton({ action, pending, onSubmit }: { action: DockAction; pendi
         className={className}
         disabled={disabled}
         title={reason ?? action.detail}
-        onClick={() => onSubmit(action.command, action.payload)}
+        onClick={() => onSubmit(action.command, action.payload, action.actorId)}
       >
         {action.label}
       </button>
@@ -102,14 +103,15 @@ function AuctionSection({ state, pending, onSubmit }: { state: GameState; pendin
               <button
                 className="cta text-sm"
                 disabled={pending || bidder.bidDisabledReason !== null || !amountValid}
-                onClick={() => onSubmit('BID', { auctionId: state.auction?.auctionId, amount })}
+                onClick={() => onSubmit('BID', { auctionId: state.auction?.auctionId, amount }, bidder.playerId)}
               >
                 Bid ${amount.toLocaleString()}
               </button>
               <button
                 className="secondary text-sm"
-                disabled={pending}
-                onClick={() => onSubmit('PASS_BID', { auctionId: state.auction?.auctionId })}
+                disabled={pending || bidder.passDisabledReason !== null}
+                title={bidder.passDisabledReason ?? undefined}
+                onClick={() => onSubmit('PASS_BID', { auctionId: state.auction?.auctionId }, bidder.playerId)}
               >
                 Pass
               </button>

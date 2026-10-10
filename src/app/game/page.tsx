@@ -12,11 +12,13 @@ import type { CommandType, GameCommand } from '@/lib/game/commands';
 import { LocalCommandSink } from '@/lib/game/engine/transport';
 import type { AnyGameEvent } from '@/lib/game/events';
 import { currentTurnDice, describeEvent } from '@/lib/game/ui/uiPlayer';
+import { gameOverSummary, victoryReasonText } from '@/lib/game/ui/actionDock';
 import type { GameState } from '@/lib/game/types';
 
 /**
- * The Phase 1 game screen (spec §12 PR 4): a minimal playable local
- * hot-seat game. Setup lives in the /lobby — this page consumes its config
+ * The Phase 1 game screen (spec §12 PR 10): the premium local hot-seat game —
+ * perimeter board, context-sensitive dock, turn indicator, and handoff
+ * privacy. Setup lives in the /lobby — this page consumes its config
  * (players, mode, seed) from the URL and starts lazily on the owner's click.
  * The page submits commands through the LocalCommandSink and renders events
  * from the EventSource seam — the §2.3 transport contract Phase 2 swaps for a
@@ -162,11 +164,13 @@ function GameScreen() {
   }, [router]);
 
   const submit = useCallback(
-    async (type: CommandType, payload: Record<string, unknown> = {}) => {
+    async (type: CommandType, payload: Record<string, unknown> = {}, actorId?: string) => {
       if (!sink || !state || pending) return;
       setPending(true);
       setError(null);
-      const actor = state.activePlayerId ?? state.players[0].id;
+      // Hot-seat: auction bids/passes and trade answers name their own actor
+      // (spec §5–§6); turn-owner commands default to the active player.
+      const actor = actorId ?? state.activePlayerId ?? state.players[0].id;
       const command = {
         commandId: `ui-${state.version}-${type}-${++commandCounter.current}`,
         gameId: state.gameId,
@@ -226,6 +230,7 @@ function GameScreen() {
 
   const activePlayer = state.players.find((p) => p.id === state.activePlayerId);
   const activeSeat = activePlayer ? activePlayer.seat : 0;
+  const over = gameOverSummary(history);
   const logLines = history
     .map(describeEvent)
     .filter((line): line is string => line !== null)
@@ -312,14 +317,20 @@ function GameScreen() {
       {state.phase === 'GAME_OVER' && (
         <section className="panel mt-6 p-8 text-center" aria-label="Game over">
           <h2 className="text-2xl font-black text-[#e3bd72]">Game over</h2>
-          <p className="mt-2 text-slate-300">Victory screens arrive with a later update — start a new game to keep playing.</p>
+          {over ? (
+            <p className="mt-2 text-slate-300">
+              {over.winnerIds.length === 1
+                ? `${over.winnerIds[0]} won — ${victoryReasonText(over.reason)}.`
+                : `Tie between ${over.winnerIds.join(', ')} — ${victoryReasonText(over.reason)}.`}
+            </p>
+          ) : (
+            <p className="mt-2 text-slate-300">The game ended.</p>
+          )}
+          <button className="cta mt-6" onClick={backToLobby}>
+            Back to the lobby
+          </button>
         </section>
       )}
-
-      <p className="mt-8 text-xs text-slate-400">
-        Vertical slice build: roll, doubles, hold, buy, and turn handover. Rent, auctions, trading, building, and save/resume land in
-        upcoming updates.
-      </p>
     </main>
   );
 }

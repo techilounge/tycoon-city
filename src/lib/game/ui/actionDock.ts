@@ -21,6 +21,7 @@ import {
   upgradeCost,
   upgradeSellBackProceeds,
 } from '../rules-v1';
+import type { AnyGameEvent, VictoryReason } from '../events';
 import type { AuctionState, GameState, PlayerId, PlayerState } from '../types';
 import type { CommandType } from '../commands';
 import { buyOffer } from './uiPlayer';
@@ -36,6 +37,9 @@ export interface DockAction {
   readonly primary?: boolean;
   /** Destructive intent (surrender) — the component adds a confirm step. */
   readonly danger?: boolean;
+  /** Who issues this command; defaults to the active player. Hot-seat auctions
+   *  and trade answers belong to other seats on the shared device (spec §5–§6). */
+  readonly actorId?: PlayerId;
 }
 
 export interface DockGroup {
@@ -265,6 +269,8 @@ export interface BidderRow {
   readonly playerId: PlayerId;
   readonly minBid: number;
   readonly bidDisabledReason: string | null;
+  /** The standing bidder cannot pass — the engine rejects it; name that rule instead of a silent failure. */
+  readonly passDisabledReason: string | null;
 }
 
 export interface AuctionPanel {
@@ -273,6 +279,11 @@ export interface AuctionPanel {
   readonly currentBid: number | null;
   readonly highBidderId: PlayerId | null;
   readonly bidders: readonly BidderRow[];
+}
+
+/** The standing high bidder cannot pass — the engine rejects PASS_BID for them. */
+function passDisabledReasonFor(auction: AuctionState, playerId: PlayerId): string | null {
+  return auction.highBidderId === playerId ? `You hold the standing bid of ${(auction.currentBid ?? 0).toLocaleString()} — wait to be outbid or win.` : null;
 }
 
 /** The open auction as the dock renders it; null when no auction is open. */
@@ -288,7 +299,7 @@ export function auctionPanel(state: GameState): AuctionPanel | null {
     let bidDisabledReason: string | null = null;
     if (!isLegalBidAmount(minBid, auction.currentBid)) bidDisabledReason = 'Bid is not a legal next bid.';
     else if (player.cash < minBid) bidDisabledReason = `Cash-backed bids: $${minBid.toLocaleString()} exceeds ${playerId}'s $${player.cash.toLocaleString()}.`;
-    bidders.push({ playerId, minBid, bidDisabledReason });
+    bidders.push({ playerId, minBid, bidDisabledReason, passDisabledReason: passDisabledReasonFor(auction, playerId) });
   }
   return {
     spaceName: space?.name ?? auction.spaceId,
@@ -327,8 +338,8 @@ export function tradePanel(state: GameState): TradePanel | null {
     recipientId: trade.recipientId,
     summary: `${trade.proposerId} offers ${sideSummary(trade.offer.give.cash, trade.offer.give.spaceIds)} for ${sideSummary(trade.offer.receive.cash, trade.offer.receive.spaceIds)}`,
     actions: [
-      { command: 'ANSWER_TRADE', payload: { tradeId: trade.tradeId, response: 'ACCEPT' }, label: 'Accept trade', primary: true },
-      { command: 'ANSWER_TRADE', payload: { tradeId: trade.tradeId, response: 'REJECT' }, label: 'Reject trade' },
+      { command: 'ANSWER_TRADE', payload: { tradeId: trade.tradeId, response: 'ACCEPT' }, label: 'Accept trade', primary: true, actorId: trade.recipientId },
+      { command: 'ANSWER_TRADE', payload: { tradeId: trade.tradeId, response: 'REJECT' }, label: 'Reject trade', actorId: trade.recipientId },
     ],
   };
 }
@@ -357,4 +368,32 @@ export function turnHeadline(state: GameState): string {
     default:
       return who;
   }
+}
+
+// Game-over presentation (the winner lives in the event log, not on state)
+
+export interface GameOverSummary {
+  readonly winnerIds: readonly PlayerId[];
+  readonly reason: VictoryReason;
+}
+
+const VICTORY_REASON_TEXT: Record<VictoryReason, string> = {
+  LAST_SOLVENT: 'the last solvent player standing',
+  NET_WORTH_TARGET: 'reached the net-worth target',
+  ROUND_CAP: 'richest when the round cap was reached',
+};
+
+/** Terminal victory read from the log; null until GAME_ENDED has fired. */
+export function gameOverSummary(history: readonly AnyGameEvent[]): GameOverSummary | null {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const event = history[i];
+    if (event.type === 'GAME_ENDED') {
+      return { winnerIds: event.payload.winnerIds, reason: event.payload.reason };
+    }
+  }
+  return null;
+}
+
+export function victoryReasonText(reason: VictoryReason): string {
+  return VICTORY_REASON_TEXT[reason];
 }
