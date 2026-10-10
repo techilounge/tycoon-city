@@ -9,11 +9,24 @@ import type { AnyGameEvent } from '@/lib/game/events';
  * movements show their worked explanation beneath the headline, derived
  * from the event payload (never recomputed).
  */
-export function HistoryPanel({ history }: { history: readonly AnyGameEvent[] }) {
+export function HistoryPanel({
+  history,
+  savedLabel = null,
+}: {
+  history: readonly AnyGameEvent[];
+  savedLabel?: 'saved' | 'failed' | null;
+}) {
   const entries = historyNewestFirst(history);
   return (
     <section className="panel p-5" aria-label="Game activity">
-      <h2 className="text-lg font-bold">Activity</h2>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-lg font-bold">Activity</h2>
+        {savedLabel && (
+          <span className={`text-xs ${savedLabel === 'saved' ? 'text-[#7fa8a4]' : 'text-[#e0a1a1]'}`} role="status">
+            {savedLabel === 'saved' ? 'Saved' : 'Save failed'}
+          </span>
+        )}
+      </div>
       <ul className="mt-3 flex max-h-96 flex-col gap-2 overflow-y-auto pr-1 text-sm text-slate-300" aria-live="polite">
         {entries.map((entry) => (
           <li key={entry.sequence} className="border-b border-white/5 pb-1.5 last:border-0">

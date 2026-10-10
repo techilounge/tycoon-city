@@ -19,6 +19,13 @@ import { LocalCommandSink } from '@/lib/game/engine/transport';
 import type { AnyGameEvent } from '@/lib/game/events';
 import { modalPlan, pendingCardReveal, pendingElimination } from '@/lib/game/ui/modals';
 import { currentTurnDice } from '@/lib/game/ui/uiPlayer';
+import {
+  LocalSnapshotStore,
+  persistGame,
+  readStartupSnapshot,
+  type StartupSnapshot,
+} from '@/lib/game/ui/persistence';
+import type { GameSnapshot } from '@/lib/game/snapshot-schema';
 import { gameOverSummary } from '@/lib/game/ui/actionDock';
 import type { GameState } from '@/lib/game/types';
 
@@ -62,12 +69,14 @@ function parseGameConfig(params: URLSearchParams): GameConfig | null {
   return { playerIds, mode: mode as ModeId, seed };
 }
 
-function ConfigProblem() {
+function ConfigProblem({ startup, onResume }: { startup: StartupSnapshot; onResume: (snapshot: GameSnapshot) => void }) {
   return (
     <main className="mx-auto min-h-screen max-w-3xl px-4 py-6 sm:px-5 sm:py-8">
       <Link href="/" className="text-xl font-black tracking-wide text-[#e3bd72]">
         TYCOON CITY
       </Link>
+      {startup.kind === 'REFUSED' && <RefusalNotice message={startup.message} />}
+      {startup.kind === 'RESUMABLE' && <ResumePanel snapshot={startup.snapshot} onResume={onResume} />}
       <section className="panel mt-8 p-8 text-center" aria-label="Missing game setup">
         <h1 className="text-2xl font-black">No game is set up</h1>
         <p className="mt-2 text-sm text-slate-300">
@@ -79,6 +88,38 @@ function ConfigProblem() {
       </section>
     </main>
   );
+}
+
+/** The §2.4 refusal: never a silent load — a clear message and the new-game path. */
+function RefusalNotice({ message }: { message: string }) {
+  return (
+    <section className="panel mt-8 border-[#b45d5d]/60 p-6" role="alert" aria-label="Saved game cannot be loaded">
+      <h2 className="text-lg font-bold text-[#e3bd72]">Saved game cannot be loaded</h2>
+      <p className="mt-2 text-sm text-slate-300">{message} Nothing was loaded — start a new game instead.</p>
+    </section>
+  );
+}
+
+function ResumePanel({ snapshot, onResume }: { snapshot: GameSnapshot; onResume: (snapshot: GameSnapshot) => void }) {
+  const players = snapshot.state.players.map((p) => p.id).join(', ');
+  return (
+    <section className="panel mt-8 p-8 text-center" aria-label="Resume saved game">
+      <h1 className="text-2xl font-black">Saved game found</h1>
+      <p className="mt-2 text-sm text-slate-300">
+        {players} · saved at move {snapshot.stateVersion}
+      </p>
+      <button className="cta mt-4" onClick={() => onResume(snapshot)}>
+        Resume game
+      </button>
+    </section>
+  );
+}
+
+/** Highest sequence of the given event type — seeds per-session reveal bookkeeping on resume. */
+function latestSeqOf(events: readonly AnyGameEvent[], type: AnyGameEvent['type']): number {
+  let seq = 0;
+  for (const event of events) if (event.type === type) seq = Math.max(seq, event.sequence);
+  return seq;
 }
 
 export default function GamePage() {
@@ -111,11 +152,56 @@ function GameScreen() {
   const [seenElimSeq, setSeenElimSeq] = useState(0);
   /** The victory surface was dismissed to view the final board; re-openable. */
   const [victoryDismissed, setVictoryDismissed] = useState(false);
+  /** Save/resume (spec §11): startup read result + the last autosave outcome. */
+  const [startup, setStartup] = useState<StartupSnapshot>({ kind: 'LOADING' });
+  const [savedLabel, setSavedLabel] = useState<'saved' | 'failed' | null>(null);
+  const storeRef = useRef<LocalSnapshotStore | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const commandCounter = useRef(0);
   const gameCounter = useRef(0);
 
   useEffect(() => () => unsubscribeRef.current?.(), []);
+
+  // One-time startup read (spec §11): what the pre-game screen should offer.
+  useEffect(() => {
+    const store = new LocalSnapshotStore(window.localStorage);
+    storeRef.current = store;
+    setStartup(readStartupSnapshot(store));
+  }, []);
+
+  // Autosave after every applied change (spec §11). The schema-validated
+  // snapshot is the authority; the companion log only feeds the history
+  // panel after a resume.
+  useEffect(() => {
+    const store = storeRef.current;
+    if (!store || !state || startup.kind === 'LOADING') return;
+    setSavedLabel(persistGame(store, state, history) ? 'saved' : 'failed');
+  }, [state, history, startup.kind]);
+
+  /** Continues a schema-validated snapshot through the LocalCommandSink resume seam. */
+  const resumeGame = useCallback((snapshot: GameSnapshot) => {
+    const store = storeRef.current;
+    if (!store) return;
+    const next = LocalCommandSink.resume(snapshot, store);
+    unsubscribeRef.current?.();
+    unsubscribeRef.current = next.events.subscribe(snapshot.gameId, 1, (event) => {
+      setHistory((h) => [...h, event]);
+      setState(next.state());
+    });
+    const resumedLog = store.loadCompanionLog(snapshot.gameId);
+    setHistory(resumedLog);
+    setSink(next);
+    setState(next.state());
+    setPending(false);
+    setError(null);
+    setRevealed(true);
+    // Reveals are per-session: a resumed log must not re-open old surfaces.
+    setSeenCardSeq(latestSeqOf(resumedLog, 'CARD_DRAWN'));
+    setSeenElimSeq(latestSeqOf(resumedLog, 'PLAYER_ELIMINATED'));
+    setVictoryDismissed(false);
+    setStartup({ kind: 'ABSENT' });
+    setSavedLabel(null);
+  }, []);
 
   const applyResult = useCallback((result: Awaited<ReturnType<LocalCommandSink['submit']>>, previousPlayer: string | null) => {
     if (!result.ok) {
@@ -138,6 +224,7 @@ function GameScreen() {
   /** Creates the game with the lobby's config, then starts it in one action. */
   const startGame = useCallback(async () => {
     if (!config) return;
+    storeRef.current?.clear();
     const gameId = `g-local-${++gameCounter.current}`;
     const next = LocalCommandSink.create({
       gameId,
@@ -207,7 +294,9 @@ function GameScreen() {
     [sink, state, pending, applyResult],
   );
 
-  if (!config) return <ConfigProblem />;
+  if (startup.kind === 'LOADING') return null;
+
+  if (!config) return <ConfigProblem startup={startup} onResume={resumeGame} />;
 
   const turnDice = state ? currentTurnDice(history) : null;
   const dice = turnDice?.roll ?? null;
@@ -222,6 +311,9 @@ function GameScreen() {
             TYCOON CITY
           </Link>
         </nav>
+
+        {startup.kind === 'REFUSED' && <RefusalNotice message={startup.message} />}
+        {startup.kind === 'RESUMABLE' && <ResumePanel snapshot={startup.snapshot} onResume={resumeGame} />}
 
         <h1 className="mt-6 text-3xl font-black tracking-tight sm:text-4xl">Ready to begin</h1>
         <p className="mt-1 text-sm text-slate-400">
@@ -339,7 +431,7 @@ function GameScreen() {
 
             <PlayerRail state={state} />
 
-            <HistoryPanel history={history} />
+            <HistoryPanel history={history} savedLabel={savedLabel} />
           </aside>
         </div>
       )}
