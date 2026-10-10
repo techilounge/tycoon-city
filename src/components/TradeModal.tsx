@@ -176,8 +176,8 @@ export function TradeComposerModal({
         <p className="text-sm text-slate-300">
           {offer && recipient ? (
             <>
-              <span className="font-semibold text-[#e3bd72]">{proposer.id}</span> gives {tradeSideText(offer.give.cash, offer.give.spaceIds, state)} ↔ receives{' '}
-              {tradeSideText(offer.receive.cash, offer.receive.spaceIds, state)}.
+              <span className="font-semibold text-[#e3bd72]">{proposer.id}</span> gives {tradeSideText(offer.give.cash, offer.give.spaceIds)} ↔ receives{' '}
+              {tradeSideText(offer.receive.cash, offer.receive.spaceIds)}.
             </>
           ) : (
             'Assemble the swap above — assets and cash move atomically, all-or-nothing.'

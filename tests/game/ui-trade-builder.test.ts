@@ -110,7 +110,7 @@ describe('ownedPurchasables and tradeSideText', () => {
     const state = twoPlayerState({ owners: { [FIRST_PROPERTY_ID]: 'Ada' } });
     assert.deepEqual(ownedPurchasables(state, 'Ada').map((s) => s.id), [FIRST_PROPERTY_ID]);
     assert.equal(ownedPurchasables(state, 'Grace').length, 0);
-    assert.equal(tradeSideText(250, [FIRST_PROPERTY_ID], state), `$250 + ${ownedPurchasables(state, 'Ada')[0].name}`);
-    assert.equal(tradeSideText(0, [], state), 'nothing');
+    assert.equal(tradeSideText(250, [FIRST_PROPERTY_ID]), `$250 + ${ownedPurchasables(state, 'Ada')[0].name}`);
+    assert.equal(tradeSideText(0, []), 'nothing');
   });
 });

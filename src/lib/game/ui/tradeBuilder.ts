@@ -132,11 +132,11 @@ export function tradeBuilderValidity(state: GameState, builder: TradeBuilderStat
     seen.add(spaceId);
   }
   for (const spaceId of builder.giveSpaceIds) {
-    if (state.owners[spaceId] !== proposerId) problems.add(`You do not own ${spaceName(state, spaceId)}.`);
+    if (state.owners[spaceId] !== proposerId) problems.add(`You do not own ${spaceName(spaceId)}.`);
   }
   for (const spaceId of builder.receiveSpaceIds) {
     if (builder.recipientId && state.owners[spaceId] !== builder.recipientId) {
-      problems.add(`${builder.recipientId} does not own ${spaceName(state, spaceId)}.`);
+      problems.add(`${builder.recipientId} does not own ${spaceName(spaceId)}.`);
     }
   }
 
@@ -147,14 +147,14 @@ export function tradeBuilderValidity(state: GameState, builder: TradeBuilderStat
   return { ok: problems.size === 0, problems: [...problems] };
 }
 
-/** One side of a swap as human text — the composer's review line. */
-export function tradeSideText(cash: number, spaceIds: readonly SpaceId[], state: GameState): string {
+/** One side of a swap as human text — the composer's and history's review line. */
+export function tradeSideText(cash: number, spaceIds: readonly SpaceId[]): string {
   const parts: string[] = [];
   if (cash > 0) parts.push(`$${cash.toLocaleString()}`);
-  for (const spaceId of spaceIds) parts.push(spaceName(state, spaceId));
+  for (const spaceId of spaceIds) parts.push(spaceName(spaceId));
   return parts.length > 0 ? parts.join(' + ') : 'nothing';
 }
 
-function spaceName(state: GameState, spaceId: SpaceId): string {
+function spaceName(spaceId: SpaceId): string {
   return BOARD_SPACES.find((space) => space.id === spaceId)?.name ?? spaceId;
 }

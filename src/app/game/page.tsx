@@ -8,6 +8,7 @@ import { AuctionModal } from '@/components/AuctionModal';
 import { BankruptcyModal } from '@/components/BankruptcyModal';
 import { Board } from '@/components/Board';
 import { EventModal } from '@/components/EventModal';
+import { HistoryPanel } from '@/components/HistoryPanel';
 import { PlayerRail } from '@/components/PlayerRail';
 import { TradeComposerModal, TradeReviewModal } from '@/components/TradeModal';
 import { TurnIndicator } from '@/components/TurnIndicator';
@@ -17,7 +18,7 @@ import type { CommandType, GameCommand } from '@/lib/game/commands';
 import { LocalCommandSink } from '@/lib/game/engine/transport';
 import type { AnyGameEvent } from '@/lib/game/events';
 import { modalPlan, pendingCardReveal, pendingElimination } from '@/lib/game/ui/modals';
-import { currentTurnDice, describeEvent } from '@/lib/game/ui/uiPlayer';
+import { currentTurnDice } from '@/lib/game/ui/uiPlayer';
 import { gameOverSummary } from '@/lib/game/ui/actionDock';
 import type { GameState } from '@/lib/game/types';
 
@@ -30,8 +31,6 @@ import type { GameState } from '@/lib/game/types';
  * from the EventSource seam — the §2.3 transport contract Phase 2 swaps for a
  * WebSocket server without touching this page's logic.
  */
-
-const HISTORY_WINDOW = 12;
 
 /** Lobby handoff config, validated before any game exists. */
 interface GameConfig {
@@ -263,11 +262,6 @@ function GameScreen() {
     bankruptcyPending: elimination !== null,
     victoryUnacknowledged: over !== null && !victoryDismissed,
   });
-  const logLines = history
-    .map(describeEvent)
-    .filter((line): line is string => line !== null)
-    .slice(-HISTORY_WINDOW)
-    .reverse();
 
   // Hot-seat privacy (spec §11): until the next player takes the handoff, the
   // board, rails, and history stay off the screen entirely — not merely dimmed.
@@ -345,15 +339,7 @@ function GameScreen() {
 
             <PlayerRail state={state} />
 
-            <section className="panel p-5" aria-label="Game activity">
-              <h2 className="text-lg font-bold">Activity</h2>
-              <ul className="mt-3 flex flex-col gap-1.5 text-sm text-slate-300" aria-live="polite">
-                {logLines.map((line, i) => (
-                  <li key={`${i}-${line}`}>{line}</li>
-                ))}
-                {logLines.length === 0 && <li className="text-slate-400">No moves yet.</li>}
-              </ul>
-            </section>
+            <HistoryPanel history={history} />
           </aside>
         </div>
       )}
