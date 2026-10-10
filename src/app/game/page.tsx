@@ -232,6 +232,27 @@ function GameScreen() {
     .slice(-HISTORY_WINDOW)
     .reverse();
 
+  // Hot-seat privacy (spec §11): until the next player takes the handoff, the
+  // board, rails, and history stay off the screen entirely — not merely dimmed.
+  if (!revealed && state.phase === 'PLAYING') {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-6xl flex-col items-center justify-center px-4 py-6 sm:px-5 sm:py-8">
+        <section className="panel handoff-in w-full max-w-md p-8 text-center" aria-label="Device handoff">
+          <p className="text-xs font-semibold uppercase tracking-widest text-[#7fa8a4]">Pass the device</p>
+          <h1 className="mt-3 text-3xl font-black tracking-tight">
+            {activePlayer ? `Hand it to ${activePlayer.id}` : 'Hand it to the next player'}
+          </h1>
+          <p className="mt-3 text-sm text-slate-300">
+            Round {state.round} · {MODES[state.mode].name} · seed {state.seed}
+          </p>
+          <button className="cta mt-6 w-full" onClick={() => setRevealed(true)}>
+            {activePlayer ? `I'm ${activePlayer.id} — show my view` : 'Continue'}
+          </button>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="mx-auto min-h-screen max-w-6xl px-4 py-6 sm:px-5 sm:py-8">
       <nav className="flex flex-wrap items-center justify-between gap-3">
@@ -270,22 +291,8 @@ function GameScreen() {
           </div>
 
           <aside className="flex flex-col gap-4">
-            {revealed ? (
-              <>
-                <TurnIndicator state={state} seat={activeSeat} dice={dice} diceKey={diceKey} />
-                <ActionDock state={state} pending={pending} onSubmit={submit} />
-              </>
-            ) : (
-              <section className="panel p-8 text-center" aria-label="Device handoff">
-                <h2 className="text-xl font-bold">Pass the device</h2>
-                <p className="mt-2 text-sm text-slate-300">
-                  {activePlayer ? `Hand the device to ${activePlayer.id}.` : 'Hand the device to the next player.'}
-                </p>
-                <button className="cta mt-4" onClick={() => setRevealed(true)}>
-                  {activePlayer ? `I'm ${activePlayer.id} — show my view` : 'Continue'}
-                </button>
-              </section>
-            )}
+            <TurnIndicator state={state} seat={activeSeat} dice={dice} diceKey={diceKey} />
+            <ActionDock state={state} pending={pending} onSubmit={submit} />
 
             <PlayerRail state={state} />
 
