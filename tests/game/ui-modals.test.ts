@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { craftedState } from './ui-crafted';
 import { FIRST_PROPERTY_ID } from './ui-spaces';
-import { modalPlan } from '../../src/lib/game/ui/modals';
+import { modalPlan, pendingCardReveal, pendingElimination } from '../../src/lib/game/ui/modals';
+import type { AnyGameEvent } from '../../src/lib/game/events';
 
 /** Modal prioritization (spec §11): forced surfaces, one-open discipline, dismissal keyed by trade id. */
 
@@ -24,10 +25,22 @@ const PENDING = {
   anchorTurn: null,
 } as const;
 
-const ui = (overrides: { tradeBuilderOpen?: boolean; counterOf?: string | null; dismissedTradeId?: string | null } = {}) => ({
+const ui = (
+  overrides: {
+    tradeBuilderOpen?: boolean;
+    counterOf?: string | null;
+    dismissedTradeId?: string | null;
+    cardRevealPending?: boolean;
+    bankruptcyPending?: boolean;
+    victoryUnacknowledged?: boolean;
+  } = {},
+) => ({
   tradeBuilderOpen: overrides.tradeBuilderOpen ?? false,
   counterOf: overrides.counterOf ?? null,
   dismissedTradeId: overrides.dismissedTradeId ?? null,
+  cardRevealPending: overrides.cardRevealPending ?? false,
+  bankruptcyPending: overrides.bankruptcyPending ?? false,
+  victoryUnacknowledged: overrides.victoryUnacknowledged ?? false,
 });
 
 describe('modalPlan — forced surfaces', () => {
@@ -90,10 +103,121 @@ describe('modalPlan — quiet by default', () => {
     assert.equal(plan.kind, 'NONE');
   });
 
-  it('never plans anything outside PLAYING', () => {
+  it('nothing plans outside PLAYING except an unacknowledged victory at GAME_OVER', () => {
     for (const phase of ['LOBBY', 'GAME_OVER'] as const) {
       const plan = modalPlan(craftedState({ phase, auction: AUCTION }), ui({ tradeBuilderOpen: true }));
       assert.equal(plan.kind, 'NONE', phase);
     }
+    const victory = modalPlan(craftedState({ phase: 'GAME_OVER' }), ui({ victoryUnacknowledged: true, tradeBuilderOpen: true }));
+    assert.deepEqual(victory, { kind: 'VICTORY' });
+  });
+});
+
+describe('modalPlan — reveal surfaces', () => {
+  it('an unacknowledged bankruptcy outranks a card reveal and trade surfaces', () => {
+    const plan = modalPlan(craftedState({ trade: PENDING }), ui({ bankruptcyPending: true, cardRevealPending: true }));
+    assert.equal(plan.kind, 'BANKRUPTCY');
+  });
+
+  it('an unseen card reveal outranks trade surfaces but not a due debt', () => {
+    const plan = modalPlan(craftedState({ trade: PENDING }), ui({ cardRevealPending: true }));
+    assert.equal(plan.kind, 'EVENT_REVEAL');
+
+    const inDebt = modalPlan(
+      craftedState({
+        turnPhase: 'SETTLING_DEBT',
+        debt: { debtorId: 'Ada', creditorId: 'BANK', amountDue: 200, reason: 'TAX' },
+      }),
+      ui({ cardRevealPending: true }),
+    );
+    assert.equal(inDebt.kind, 'DEBT');
+  });
+});
+
+describe('pendingCardReveal', () => {
+  // Card facts are REAL catalog rows — the reveal resolves the card id, it never
+  // invents titles. municipal-fine: 'Municipal Fine Notice', PAY 100 (board-v1).
+  const draw: AnyGameEvent = {
+    eventId: 'e-draw',
+    gameId: 'g-test',
+    sequence: 3,
+    rulesVersion: 1,
+    commandId: 'ui-test',
+    type: 'CARD_DRAWN',
+    payload: { playerId: 'Ada' },
+    meta: { cardId: 'municipal-fine' },
+  };
+  const applied: AnyGameEvent = {
+    eventId: 'e-applied',
+    gameId: 'g-test',
+    sequence: 4,
+    rulesVersion: 1,
+    commandId: 'ui-test',
+    type: 'CARD_EFFECT_APPLIED',
+    payload: { playerId: 'Ada', cardId: 'municipal-fine', effect: { kind: 'PAY', amount: 100 } },
+    meta: {},
+  };
+
+  it('resolves the last unseen draw against the catalog with its applied effect', () => {
+    const reveal = pendingCardReveal([draw, applied], 0);
+    assert.ok(reveal);
+    assert.equal(reveal.sequence, 3);
+    assert.equal(reveal.playerId, 'Ada');
+    assert.equal(reveal.title, 'Municipal Fine Notice');
+    assert.equal(reveal.text, 'An unpaid permit surfaces. Pay the bank $100.');
+    assert.deepEqual(reveal.effect, { kind: 'PAY', amount: 100 });
+  });
+
+  it('nothing unseen, or everything already acknowledged, yields null', () => {
+    assert.equal(pendingCardReveal([], 0), null);
+    assert.equal(pendingCardReveal([draw, applied], 4), null);
+  });
+});
+
+describe('pendingElimination', () => {
+  const bankrupt: AnyGameEvent = {
+    eventId: 'e-bankrupt',
+    gameId: 'g-test',
+    sequence: 7,
+    rulesVersion: 1,
+    commandId: 'ui-test',
+    type: 'PLAYER_BANKRUPT',
+    payload: { playerId: 'Grace', creditorId: 'BANK' },
+    meta: {},
+  };
+  const transferred: AnyGameEvent = {
+    eventId: 'e-transfer',
+    gameId: 'g-test',
+    sequence: 8,
+    rulesVersion: 1,
+    commandId: 'ui-test',
+    type: 'ASSETS_TRANSFERRED',
+    payload: { fromId: 'Grace', toId: 'BANK', cash: 340, spaceIds: ['harbor-saltmarket'] },
+    meta: {},
+  };
+  const eliminated: AnyGameEvent = {
+    eventId: 'e-elim',
+    gameId: 'g-test',
+    sequence: 9,
+    rulesVersion: 1,
+    commandId: 'ui-test',
+    type: 'PLAYER_ELIMINATED',
+    payload: { playerId: 'Grace' },
+    meta: {},
+  };
+
+  it('collects the estate facts from the waterfall events that preceded the elimination', () => {
+    const reveal = pendingElimination([bankrupt, transferred, eliminated], 0);
+    assert.ok(reveal);
+    assert.equal(reveal.sequence, 9);
+    assert.equal(reveal.playerId, 'Grace');
+    assert.equal(reveal.creditorId, 'BANK');
+    assert.equal(reveal.transferredCash, 340);
+    assert.deepEqual(reveal.transferredSpaceIds, ['harbor-saltmarket']);
+  });
+
+  it('an acknowledged elimination never re-shows; an empty history yields null', () => {
+    assert.equal(pendingElimination([bankrupt, transferred, eliminated], 9), null);
+    assert.equal(pendingElimination([], 0), null);
   });
 });

@@ -73,7 +73,6 @@ export function ActionDock({
    *  the composer is a modal, not a command, so it is a UI trigger, not a DockAction. */
   onOpenTrade?: () => void;
 }) {
-  const groups = dockGroups(state);
   const tradeTriggerVisible =
     onOpenTrade !== undefined && state.phase === 'PLAYING' && state.turnPhase === 'TURN_MANAGEMENT' && state.trade === null;
   return (
@@ -91,7 +90,28 @@ export function ActionDock({
           </div>
         </section>
       )}
-      {groups.map((group) => (
+      <DockActionGroups state={state} pending={pending} onSubmit={onSubmit} />
+    </>
+  );
+}
+
+/**
+ * Renders the pure dock projection for the current phase — shared by the
+ * dock panel and the debt modal (spec §11), so both surfaces always offer
+ * exactly the same legal commands from one source of truth.
+ */
+export function DockActionGroups({
+  state,
+  pending,
+  onSubmit,
+}: {
+  state: GameState;
+  pending: boolean;
+  onSubmit: Submit;
+}) {
+  return (
+    <>
+      {dockGroups(state).map((group) => (
         <section key={group.id} className="panel p-5" aria-label={group.title}>
           <h3 className="text-base font-bold">{group.title}</h3>
           {group.note && <p className="mt-1 text-xs text-slate-400">{group.note}</p>}

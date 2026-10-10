@@ -5,17 +5,20 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ActionDock } from '@/components/ActionDock';
 import { AuctionModal } from '@/components/AuctionModal';
+import { BankruptcyModal } from '@/components/BankruptcyModal';
 import { Board } from '@/components/Board';
+import { EventModal } from '@/components/EventModal';
 import { PlayerRail } from '@/components/PlayerRail';
 import { TradeComposerModal, TradeReviewModal } from '@/components/TradeModal';
 import { TurnIndicator } from '@/components/TurnIndicator';
+import { VictoryModal } from '@/components/VictoryModal';
 import { MODES, MODE_IDS, type ModeId } from '@/lib/game/board-v1';
 import type { CommandType, GameCommand } from '@/lib/game/commands';
 import { LocalCommandSink } from '@/lib/game/engine/transport';
 import type { AnyGameEvent } from '@/lib/game/events';
-import { modalPlan } from '@/lib/game/ui/modals';
+import { modalPlan, pendingCardReveal, pendingElimination } from '@/lib/game/ui/modals';
 import { currentTurnDice, describeEvent } from '@/lib/game/ui/uiPlayer';
-import { gameOverSummary, victoryReasonText } from '@/lib/game/ui/actionDock';
+import { gameOverSummary } from '@/lib/game/ui/actionDock';
 import type { GameState } from '@/lib/game/types';
 
 /**
@@ -103,6 +106,12 @@ function GameScreen() {
   const [tradeBuilder, setTradeBuilder] = useState<{ counterOf: string | null } | null>(null);
   /** The pending-trade review the user dismissed — a NEW offer (different id) re-opens it. */
   const [dismissedTradeId, setDismissedTradeId] = useState<string | null>(null);
+  /** The last card draw revealed to the table (sequence) — pendingCardReveal derives what is unseen. */
+  const [seenCardSeq, setSeenCardSeq] = useState(0);
+  /** The last elimination acknowledged (sequence). */
+  const [seenElimSeq, setSeenElimSeq] = useState(0);
+  /** The victory surface was dismissed to view the final board; re-openable. */
+  const [victoryDismissed, setVictoryDismissed] = useState(false);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const commandCounter = useRef(0);
   const gameCounter = useRef(0);
@@ -150,6 +159,9 @@ function GameScreen() {
     setPending(true);
     setError(null);
     setRevealed(true);
+    setSeenCardSeq(0);
+    setSeenElimSeq(0);
+    setVictoryDismissed(false);
     const fresh = next.state();
     const result = await next.submit({
       commandId: 'ui-start',
@@ -241,10 +253,15 @@ function GameScreen() {
   const activePlayer = state.players.find((p) => p.id === state.activePlayerId);
   const activeSeat = activePlayer ? activePlayer.seat : 0;
   const over = gameOverSummary(history);
+  const cardReveal = pendingCardReveal(history, seenCardSeq);
+  const elimination = pendingElimination(history, seenElimSeq);
   const plan = modalPlan(state, {
     tradeBuilderOpen: tradeBuilder !== null,
     counterOf: tradeBuilder?.counterOf ?? null,
     dismissedTradeId,
+    cardRevealPending: cardReveal !== null,
+    bankruptcyPending: elimination !== null,
+    victoryUnacknowledged: over !== null && !victoryDismissed,
   });
   const logLines = history
     .map(describeEvent)
@@ -296,7 +313,7 @@ function GameScreen() {
           : `Round ${state.round} · ${MODES[state.mode].name} · ${state.players.length} players · hot-seat`}
       </p>
 
-      {state.phase === 'PLAYING' && (
+      {state.phase !== 'LOBBY' && (
         <div className="mt-6 grid gap-4 lg:grid-cols-[2fr_1fr]">
           <div className="flex flex-col gap-4">
             <Board state={state} />
@@ -320,6 +337,12 @@ function GameScreen() {
               </button>
             )}
 
+            {state.phase === 'GAME_OVER' && victoryDismissed && over !== null && (
+              <button className="secondary text-sm" onClick={() => setVictoryDismissed(false)}>
+                Final standings…
+              </button>
+            )}
+
             <PlayerRail state={state} />
 
             <section className="panel p-5" aria-label="Game activity">
@@ -335,26 +358,32 @@ function GameScreen() {
         </div>
       )}
 
-      {state.phase === 'GAME_OVER' && (
-        <section className="panel mt-6 p-8 text-center" aria-label="Game over">
-          <h2 className="text-2xl font-black text-[#e3bd72]">Game over</h2>
-          {over ? (
-            <p className="mt-2 text-slate-300">
-              {over.winnerIds.length === 1
-                ? `${over.winnerIds[0]} won — ${victoryReasonText(over.reason)}.`
-                : `Tie between ${over.winnerIds.join(', ')} — ${victoryReasonText(over.reason)}.`}
-            </p>
-          ) : (
-            <p className="mt-2 text-slate-300">The game ended.</p>
-          )}
-          <button className="cta mt-6" onClick={backToLobby}>
-            Back to the lobby
-          </button>
-        </section>
-      )}
-
       {plan.kind === 'AUCTION' && (
         <AuctionModal key={state.auction?.auctionId ?? 'auc'} state={state} pending={pending} onSubmit={submit} />
+      )}
+      {plan.kind === 'EVENT_REVEAL' && cardReveal !== null && (
+        <EventModal
+          key={`card-${cardReveal.sequence}`}
+          reveal={cardReveal}
+          pending={pending}
+          onDismiss={() => setSeenCardSeq(cardReveal.sequence)}
+        />
+      )}
+      {plan.kind === 'BANKRUPTCY' && elimination !== null && (
+        <BankruptcyModal
+          key={`elim-${elimination.sequence}`}
+          reveal={elimination}
+          pending={pending}
+          onDismiss={() => setSeenElimSeq(elimination.sequence)}
+        />
+      )}
+      {plan.kind === 'VICTORY' && over !== null && (
+        <VictoryModal
+          summary={over}
+          state={state}
+          onDismiss={() => setVictoryDismissed(true)}
+          onBackToLobby={backToLobby}
+        />
       )}
       {plan.kind === 'TRADE_REVIEW' && (
         <TradeReviewModal
