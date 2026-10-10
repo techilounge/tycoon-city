@@ -28,5 +28,8 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Simulation smoke (20 seeds per cell, spec §14)
+        run: npm run sim -- --seeds=20 --no-json
+
       - name: Build
         run: npm run build
