@@ -5,7 +5,7 @@ import { applyCommand, createGame } from '../../src/lib/game/engine/reducer';
 import { rngForState } from '../../src/lib/game/rng';
 import { currentTurnDice, describeEvent, tileCaption } from '../../src/lib/game/ui/uiPlayer';
 import type { CommandType, GameCommand } from '../../src/lib/game/commands';
-import type { GameState } from '../../src/lib/game/types';
+import type { GameState, PlayerId } from '../../src/lib/game/types';
 import type { AnyGameEvent } from '../../src/lib/game/events';
 
 /** Presentation contracts pinned by the owner's playtest:
@@ -21,11 +21,11 @@ function freshState(seed: number): GameState {
   return created.state;
 }
 
-function submit(state: GameState, type: CommandType, payload: Record<string, unknown> = {}): ReturnType<typeof applyCommand> {
+function submit(state: GameState, type: CommandType, payload: Record<string, unknown> = {}, actorOverride?: PlayerId): ReturnType<typeof applyCommand> {
   const command = {
     commandId: `ui-pres-${state.version}-${type}`,
     gameId: state.gameId,
-    actorId: state.activePlayerId ?? state.players[0].id,
+    actorId: actorOverride ?? state.activePlayerId ?? state.players[0].id,
     expectedVersion: state.version,
     type,
     payload,
@@ -58,12 +58,32 @@ function drive(seed: number, rolls: number, stopAfterRoll = false): Driven {
     events.push(...r.events);
     n++;
     if (stopAfterRoll && made === rolls - 1) break;
-    // The transitional PASS_TO_AUCTION path closes the auction and advances
-    // the turn, so the resolve loop simply runs until the next AWAITING_ROLL.
+    // Real auctions (PR 6) resolve inside the decliner's turn; the resolve
+    // loop simply runs until the next AWAITING_ROLL.
     let guard = 0;
-    while (state.phase === 'PLAYING' && state.turnPhase !== 'AWAITING_ROLL' && guard++ < 5) {
-      const type: CommandType = state.turnPhase === 'BUY_DECISION' ? 'PASS_TO_AUCTION' : 'END_TURN';
-      const r2 = submit(state, type);
+    while (state.phase === 'PLAYING' && state.turnPhase !== 'AWAITING_ROLL' && guard++ < 10) {
+      // The driver never bids — the first player who is unpassed and not the
+      // high bidder passes, deterministically; a no-bid auction always ends
+      // unsold once everyone has passed.
+      let actor: PlayerId | undefined;
+      let payload: Record<string, unknown> = {};
+      let type: CommandType;
+      if (state.turnPhase === 'BUY_DECISION') {
+        type = 'PASS_TO_AUCTION';
+      } else if (state.turnPhase === 'AUCTION') {
+        const auction = state.auction;
+        if (!auction) throw new Error('auction phase without an open auction');
+        const bidder = auction.eligiblePlayerIds.find(
+          (id) => !auction.passedPlayerIds.includes(id) && auction.highBidderId !== id,
+        );
+        if (!bidder) throw new Error('auction invariant: an actionable bidder exists while the auction is open');
+        actor = bidder;
+        type = 'PASS_BID';
+        payload = { auctionId: auction.auctionId };
+      } else {
+        type = 'END_TURN';
+      }
+      const r2 = submit(state, type, payload, actor);
       if (!r2.ok) throw r2.error;
       state = r2.state;
       events.push(...r2.events);

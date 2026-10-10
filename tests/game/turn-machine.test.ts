@@ -123,6 +123,7 @@ function craftedState(overrides: {
     mortgaged: overrides.mortgaged ?? {},
     eventDeck: overrides.eventDeck ?? { drawPile: [], discardPile: [] },
     debt: overrides.debt ?? null,
+    auction: null,
     rulesVersion: RULES_VERSION,
     seed: 1,
     rngState: overrides.rngState ?? 1,
@@ -454,24 +455,44 @@ describe('row 5 — BUY', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Row 6 (transitional) — PASS_TO_AUCTION
+// Row 6 — PASS_TO_AUCTION (spec §5, implemented in PR 6)
 
-describe('row 6 transitional — PASS_TO_AUCTION', () => {
-  it('declines the purchase: the space stays with the bank and the turn proceeds', () => {
+describe('row 6 — PASS_TO_AUCTION opens a real auction (spec §5, PR 6)', () => {
+  it('opens the auction: phase AUCTION, decliner eligible, no money moved', () => {
     const state = craftedState({
       players: [mkPlayer({ id: 'Ada', seat: 0, position: 1 }), mkPlayer({ id: 'Grace', seat: 1 })],
       turnPhase: 'BUY_DECISION',
     });
     const { state: s1, events } = applyOk(state, 'PASS_TO_AUCTION');
 
-    assert.deepEqual(events, [], 'the transitional decline logs zero events — nothing changed');
-    assert.deepEqual(s1.owners, {});
-    assert.equal(s1.turnPhase, 'TURN_MANAGEMENT');
+    assert.deepEqual(eventTypes(events), ['AUCTION_OPENED']);
+    assert.equal(s1.turnPhase, 'AUCTION');
+    assert.equal(s1.activePlayerId, 'Ada', "the auction runs inside the decliner's turn");
+    assert.deepEqual(s1.owners, {}, 'the space stays with the bank until a bid settles');
+    assert.deepEqual(s1.players.map((p) => p.cash), [1500, 1500], 'declining moves no money');
+    const auction = s1.auction;
+    assert.ok(auction);
+    assert.equal(auction.spaceId, 'foundry-smeltery', 'the token-space sells, not a payload choice');
+    assert.equal(auction.reason, 'DECLINED');
+    assert.equal(auction.currentBid, null);
+    assert.equal(auction.highBidderId, null);
+    assert.deepEqual(auction.passedPlayerIds, []);
+    assert.deepEqual(auction.eligiblePlayerIds, ['Ada', 'Grace'], 'the decliner may bid (Decision D-2)');
+    assert.equal(auction.auctionId, 'auction-41', 'id derives from the opening event sequence');
   });
 
   it('is rejected outside BUY_DECISION', () => {
     const state = craftedState({ turnPhase: 'AWAITING_ROLL' });
     assert.equal(applyErr(state, 'PASS_TO_AUCTION').code, 'INVALID_PHASE');
+  });
+
+  it('rejects a second decline once the auction is open', () => {
+    const state = craftedState({
+      players: [mkPlayer({ id: 'Ada', seat: 0, position: 1 }), mkPlayer({ id: 'Grace', seat: 1 })],
+      turnPhase: 'BUY_DECISION',
+    });
+    const { state: s1 } = applyOk(state, 'PASS_TO_AUCTION');
+    assert.equal(applyErr(s1, 'PASS_TO_AUCTION').code, 'INVALID_PHASE');
   });
 });
 
