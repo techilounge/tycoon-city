@@ -4,7 +4,7 @@ import test from 'node:test';
 import { applyCommand, createGame } from '../../src/lib/game/engine/reducer';
 import { rngForState } from '../../src/lib/game/rng';
 import { buildSnapshot, parseSnapshot, serializeSnapshot, validateGameStateShape, type GameSnapshot } from '../../src/lib/game/snapshot-schema';
-import { SNAPSHOT_SCHEMA_VERSION, RULES_VERSION } from '../../src/lib/game/types';
+import { SNAPSHOT_SCHEMA_VERSION, RULES_VERSION, type GameState } from '../../src/lib/game/types';
 import { makeCommand, makeGame, commandId, GAME_ID, PLAYER_IDS, SEED } from './helpers';
 
 function advancedState() {
@@ -166,4 +166,101 @@ test('snapshot: GameSnapshot type carries schemaVersion as the rollback gate', (
   const snapshot: GameSnapshot = buildSnapshot(advancedState());
   assert.equal(typeof snapshot.schemaVersion, 'number');
   assert.equal(snapshot.schemaVersion, SNAPSHOT_SCHEMA_VERSION);
+});
+
+
+// ---------------------------------------------------------------------------
+// Schema v2 (PR 8): the bankruptcy waterfall added `round` and `estateSale`,
+// and estate auctions carry the BANK_ESTATE reason inside ELIMINATION_AUCTIONS.
+
+/** A hand-built state paused mid-estate-sale: Ada eliminated, the Anvil sold
+ *  to Grace, the last estate space (hub) contested at $30. */
+function estateMidState() {
+  return {
+    gameId: 'g-end',
+    version: 9,
+    phase: 'PLAYING',
+    turnPhase: 'ELIMINATION_AUCTIONS',
+    mode: 'CLASSIC',
+    doublesCount: 0,
+    owners: {},
+    upgrades: {},
+    mortgaged: {},
+    eventDeck: { drawPile: [], discardPile: [] },
+    debt: null,
+    auction: {
+      auctionId: 'auction-11',
+      spaceId: 'hub-central-relay',
+      reason: 'BANK_ESTATE',
+      currentBid: 30,
+      highBidderId: 'Grace',
+      passedPlayerIds: ['Ben'],
+      eligiblePlayerIds: ['Grace', 'Ben'],
+    },
+    trade: null,
+    estateSale: { debtorId: 'Ada', pendingSpaceIds: [] },
+    rulesVersion: RULES_VERSION,
+    seed: 1,
+    rngState: 424242,
+    players: [
+      { id: 'Ada', seat: 0, eliminated: true, position: 5, cash: 0, tokens: { HOLD: 0, RENT_HOLIDAY: 0 }, skipNextTurn: false },
+      { id: 'Grace', seat: 1, eliminated: false, position: 2, cash: 1470, tokens: { HOLD: 1, RENT_HOLIDAY: 1 }, skipNextTurn: false },
+      { id: 'Ben', seat: 2, eliminated: false, position: 3, cash: 1500, tokens: { HOLD: 0, RENT_HOLIDAY: 0 }, skipNextTurn: false },
+    ],
+    activePlayerId: 'Ada',
+    turn: 3,
+    round: 1,
+    lastEventSequence: 11,
+    processedCommandIds: [],
+  } as unknown as GameState;
+}
+
+test('snapshot: a mid-elimination-auction state round-trips losslessly (schema v2)', () => {
+  const state = estateMidState();
+  const raw = serializeSnapshot(buildSnapshot(state));
+  const parsed = parseSnapshot(raw);
+  assert.ok(parsed.ok, `the estate state must load: ${parsed.ok ? '' : parsed.message}`);
+  if (parsed.ok) {
+    assert.equal(parsed.snapshot.schemaVersion, SNAPSHOT_SCHEMA_VERSION);
+    assert.deepEqual(parsed.snapshot.state, state, 'round-trip is lossless, estate sale included');
+    assert.equal(parsed.snapshot.state.estateSale?.debtorId, 'Ada');
+    assert.equal(parsed.snapshot.state.auction?.reason, 'BANK_ESTATE');
+  }
+});
+
+test('snapshot: play after loading a mid-estate state equals uninterrupted play', () => {
+  const state = estateMidState();
+  const parsed = parseSnapshot(serializeSnapshot(buildSnapshot(state)));
+  assert.ok(parsed.ok);
+  if (parsed.ok) {
+    // Grace outbids herself at $40 as the sole unpassed bidder: she wins and
+    // pays inside the command, the estate sale completes, and the interrupted
+    // turn hands over — identical from the live state and the loaded one.
+    const nextCommand = makeCommand('BID', { actorId: 'Grace', gameId: 'g-end', expectedVersion: state.version, payload: { auctionId: 'auction-11', amount: 40 }, commandId: commandId() });
+    const fromLoaded = applyCommand(parsed.snapshot.state, nextCommand, rngForState(parsed.snapshot.state.rngState));
+    const fromLive = applyCommand(state, nextCommand, rngForState(state.rngState));
+    assert.ok(fromLoaded.ok && fromLive.ok);
+    if (fromLoaded.ok && fromLive.ok) {
+      assert.deepEqual(fromLoaded.state, fromLive.state, 'the loaded estate sale finishes exactly as the live one');
+      assert.equal(fromLoaded.state.estateSale, null);
+      assert.equal(fromLoaded.state.owners['hub-central-relay'], 'Grace');
+    }
+  }
+});
+
+test('snapshot: estate-sale invariants are enforced at the persistence boundary', () => {
+  const state = estateMidState();
+  const snapshot = buildSnapshot(state);
+  const cases: Array<{ broken: Record<string, unknown>; why: string }> = [
+    { broken: { ...snapshot, state: { ...state, estateSale: null } }, why: 'the ELIMINATION_AUCTIONS phase with no open estate is malformed' },
+    { broken: { ...snapshot, state: { ...state, estateSale: { debtorId: 'Zoe', pendingSpaceIds: [] } } }, why: 'an estate debtor must be a real player' },
+    { broken: { ...snapshot, state: { ...state, estateSale: { debtorId: 'Ada', pendingSpaceIds: 'hub' } } }, why: 'pending spaces are an array' },
+    { broken: { ...snapshot, state: { ...state, round: 'one' } }, why: 'round is an integer' },
+    { broken: { ...snapshot, state: { ...state, auction: { ...state.auction, reason: 'DECLINED_PURCHASE' } } }, why: 'a DECLINED_PURCHASE auction never lives in ELIMINATION_AUCTIONS' },
+  ];
+  for (const { broken, why } of cases) {
+    const result = parseSnapshot(JSON.stringify(broken));
+    assert.equal(result.ok, false, why);
+    if (result.ok === false) assert.equal(result.reason, 'INCONSISTENT');
+  }
 });
