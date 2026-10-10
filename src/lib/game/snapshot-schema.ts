@@ -8,7 +8,7 @@
  * schemaVersion gates deserialization.
  */
 import type { GameState } from './types';
-import { DEBT_REASONS, GAME_PHASES, RULES_VERSION, SNAPSHOT_SCHEMA_VERSION, TOKEN_KINDS, TURN_PHASES, isUint32 } from './types';
+import { AUCTION_OPEN_REASONS, DEBT_REASONS, GAME_PHASES, RULES_VERSION, SNAPSHOT_SCHEMA_VERSION, TOKEN_KINDS, TURN_PHASES, isUint32 } from './types';
 import { BOARD_LOOP_SIZE, MODE_IDS } from './board-v1';
 import { MAX_UPGRADE_LEVEL } from './rules-v1';
 import { canonicalJson } from './engine/replay';
@@ -152,7 +152,8 @@ export function validateGameStateShape(state: unknown): boolean {
     if (spaceId.length === 0 || typeof ownerId !== 'string' || ownerId.length === 0) return false;
   }
 
-  // Economy state (PR 5): built levels, mortgage flags, deck piles, open debt.
+  // Economy state (PR 5): built levels, mortgage flags, deck piles, open
+  // debt; PR 6 adds the open auction (spec §5).
   if (typeof s.upgrades !== 'object' || s.upgrades === null || Array.isArray(s.upgrades)) return false;
   for (const [spaceId, level] of Object.entries(s.upgrades)) {
     if (spaceId.length === 0) return false;
@@ -202,6 +203,38 @@ export function validateGameStateShape(state: unknown): boolean {
     if (typeof debt.amountDue !== 'number' || !Number.isInteger(debt.amountDue) || debt.amountDue < 1) return false;
     if (typeof debt.reason !== 'string' || !(DEBT_REASONS as readonly string[]).includes(debt.reason)) return false;
     if (s.turnPhase !== 'SETTLING_DEBT') return false;
+  }
+
+  // An open auction is exactly an AUCTION turn phase (spec §5 invariant).
+  if (s.auction !== null) {
+    if (typeof s.auction !== 'object') return false;
+    const auction = s.auction as Record<string, unknown>;
+    if (typeof auction.auctionId !== 'string' || auction.auctionId.length === 0) return false;
+    if (typeof auction.spaceId !== 'string' || auction.spaceId.length === 0) return false;
+    if (typeof auction.reason !== 'string' || !(AUCTION_OPEN_REASONS as readonly string[]).includes(auction.reason)) return false;
+    // currentBid and highBidderId are null together (spec §5).
+    const bid = auction.currentBid;
+    const bidder = auction.highBidderId;
+    const hasBid = bid !== null;
+    if (hasBid !== (bidder !== null)) return false;
+    if (hasBid && (typeof bid !== 'number' || !Number.isInteger(bid) || bid < 1)) return false;
+    if (bidder !== null && (typeof bidder !== 'string' || bidder.length === 0)) return false;
+    if (!Array.isArray(auction.passedPlayerIds) || !Array.isArray(auction.eligiblePlayerIds)) return false;
+    // Eligibility is a snapshot of live players (spec §5); no duplicates.
+    const eligible = new Set<string>();
+    for (const id of auction.eligiblePlayerIds) {
+      if (typeof id !== 'string' || id.length === 0 || !seenIds.has(id) || eligible.has(id)) return false;
+      eligible.add(id);
+    }
+    const passed = new Set<string>();
+    for (const id of auction.passedPlayerIds) {
+      if (typeof id !== 'string' || !eligible.has(id) || passed.has(id)) return false;
+      passed.add(id);
+    }
+    if (s.turnPhase !== 'AUCTION') return false;
+  } else if (s.turnPhase === 'AUCTION') {
+    // The converse: an AUCTION phase with no open auction is malformed (spec §5).
+    return false;
   }
 
   if (!Array.isArray(s.processedCommandIds)) return false;

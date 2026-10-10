@@ -90,6 +90,7 @@ function craftedState(overrides: {
     mortgaged: overrides.mortgaged ?? {},
     eventDeck: overrides.eventDeck ?? { drawPile: [], discardPile: [] },
     debt: overrides.debt ?? null,
+    auction: null,
     rulesVersion: RULES_VERSION,
     seed: 1,
     rngState: overrides.rngState ?? 1,

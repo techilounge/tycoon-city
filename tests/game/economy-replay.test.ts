@@ -70,6 +70,7 @@ function economySessionState(): GameState {
       discardPile: ['storm-repairs', 'zoning-variance'],
     },
     debt: { debtorId: 'Ada', creditorId: 'Grace', amountDue: 150, reason: 'RENT' },
+    auction: null,
     rulesVersion: RULES_VERSION,
     seed: 4242,
     rngState: 4242,
@@ -101,7 +102,7 @@ function driveEconomySession(initial: GameState, maxCommands: number): DriveResu
   const log: GameCommand[] = [];
   const events: AnyGameEvent[] = [];
 
-  const push = (type: CommandType, opts: { payload?: Record<string, unknown> } = {}): void => {
+  const push = (type: CommandType, opts: { payload?: Record<string, unknown>; actor?: PlayerId } = {}): void => {
     const command = makeCommand(state, type, opts);
     const result = applyCommand(state, command, rngForState(state.rngState));
     assert.ok(result.ok, `${type} must apply in the driven session: ${result.ok ? '' : result.error.message}`);
@@ -127,6 +128,19 @@ function driveEconomySession(initial: GameState, maxCommands: number): DriveResu
         // defensive fallback (unimplemented until PR 6).
         if ('listPrice' in landed && actor.cash >= landed.listPrice) push('BUY', { payload: { spaceId: landed.id } });
         else push('PASS_TO_AUCTION');
+        break;
+      }
+      case 'AUCTION': {
+        // Real auctions since PR 6: the driver never bids — the first player
+        // unpassed and not the high bidder passes, deterministically; a
+        // no-bid auction ends unsold once everyone has passed.
+        const auction = state.auction;
+        if (!auction) throw new Error('engine bug: AUCTION phase without an open auction');
+        const bidder = auction.eligiblePlayerIds.find(
+          (id) => !auction.passedPlayerIds.includes(id) && auction.highBidderId !== id,
+        );
+        if (!bidder) throw new Error('engine bug: no actionable bidder in an open auction');
+        push('PASS_BID', { actor: bidder, payload: { auctionId: auction.auctionId } });
         break;
       }
       case 'TURN_MANAGEMENT':
@@ -251,6 +265,7 @@ describe('event deck: all 18 catalog cards', () => {
         discardPile: [],
       },
       debt: null,
+      auction: null,
       rulesVersion: RULES_VERSION,
       seed: SEED_SUM2,
       rngState: SEED_SUM2,

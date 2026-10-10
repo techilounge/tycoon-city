@@ -16,7 +16,7 @@ import type { GameState } from '../../src/lib/game/types';
  */
 
 function nextCommand(state: GameState, seq: number): GameCommand {
-  const actor = state.activePlayerId ?? state.players[0].id;
+  let actor = state.activePlayerId ?? state.players[0].id;
   let type: CommandType;
   let payload: Record<string, unknown> = {};
   switch (state.turnPhase) {
@@ -30,6 +30,21 @@ function nextCommand(state: GameState, seq: number): GameCommand {
       type = isPurchasable(landed) && player.cash >= landed.listPrice ? 'BUY' : 'PASS_TO_AUCTION';
       // BUY takes an optional spaceId; PASS_TO_AUCTION's schema allows no keys.
       payload = type === 'BUY' ? { spaceId: landed.id } : {};
+      break;
+    }
+    case 'AUCTION': {
+      // Real auctions since PR 6: the bot never bids — the first player still
+      // unpassed and not the high bidder passes, deterministically. With no
+      // bids the auction always ends unsold; every pass advances it.
+      const auction = state.auction;
+      assert.ok(auction);
+      const bidder = auction.eligiblePlayerIds.find(
+        (id) => !auction.passedPlayerIds.includes(id) && auction.highBidderId !== id,
+      );
+      assert.ok(bidder, 'auction invariant: an actionable bidder exists while the auction is open');
+      actor = bidder;
+      type = 'PASS_BID';
+      payload = { auctionId: auction.auctionId };
       break;
     }
     case 'TURN_MANAGEMENT':

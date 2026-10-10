@@ -112,6 +112,26 @@ export function serviceCharge(diceTotal: number, servicesOwned: number): number 
   return 0;
 }
 
+/** Auctions (spec §5): the opening minimum and the minimum increment — bids
+ *  move in $10 steps, strictly ascending. Provisional v1 values, like every
+ *  other economy constant; a retune edits this file and docs/RULES.md only. */
+export const AUCTION_OPENING_BID = 10;
+export const AUCTION_MINIMUM_INCREMENT = 10;
+
+/**
+ * Whether `amount` is a legal bid against the standing bid (spec §5): a
+ * whole-dollar multiple of the increment, at least the opening minimum, and
+ * strictly ascending — at least one increment above any standing bid. The
+ * first bid faces `currentBid = null` and must meet only the opening minimum.
+ * Cash-backing (bid ≤ bidder's cash) is state-level resolution logic, not
+ * arithmetic — the auction module enforces it per bidder.
+ */
+export function isLegalBidAmount(amount: number, currentBid: number | null): boolean {
+  if (!Number.isInteger(amount) || amount < AUCTION_OPENING_BID) return false;
+  if (amount % AUCTION_MINIMUM_INCREMENT !== 0) return false;
+  return currentBid === null || amount - currentBid >= AUCTION_MINIMUM_INCREMENT;
+}
+
 /**
  * What an assessment space charges when landed on (spec §8): the Assessment
  * Office is a flat $120; the Municipal Levy takes 8% of the payer's current
