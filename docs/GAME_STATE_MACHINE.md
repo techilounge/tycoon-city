@@ -1,95 +1,246 @@
-# Tycoon City — Game State Machine (Phase 1, first pass)
+# Tycoon City — Game State Machine (Phase 1, final)
 
-**Status:** first pass shipped with the PR 4 vertical slice; finalizes at PR 12 (spec §13).
-This document is the source of truth for **state and phase truth**. Rules formulas live in `docs/RULES.md`; transport contracts in `docs/MULTIPLAYER_CONTRACT.md` (PR 12).
+**Status:** final · **Rules:** v1 · **Snapshot schema:** v2 ·
+Verified against the reducer on `main` (`engine/reducer.ts` and its surface
+modules) as of the Phase 1 docs wrap-up. This document is the source of truth
+for **state truth** — phases, transitions, the command registry, the event
+catalog, debt/bankruptcy, and snapshot history. Rules values live in
+`docs/RULES.md`; transport in `docs/MULTIPLAYER_CONTRACT.md`.
 
-## Game phases
+## 1. Phases
 
-```
-LOBBY ──START_GAME──▶ PLAYING ──(victory, PR 8)──▶ GAME_OVER
-```
+`GamePhase`: `LOBBY → PLAYING → GAME_OVER`.
 
-- `LOBBY` — players seated, nothing owned; only `START_GAME` is legal.
-- `PLAYING` — the whole turn loop below. All slice gameplay happens here.
-- `GAME_OVER` — terminal; every command is rejected with `GAME_IS_OVER` (victory evaluation lands with PR 8).
+Within `PLAYING`, `state.turnPhase` (the `TurnPhase` union) takes exactly these
+values, and no others:
 
-## Turn phases inside PLAYING
+| TurnPhase | Meaning |
+|---|---|
+| `AWAITING_ROLL` | The active player must roll (or `HOLD`, or manage pending trade answers). |
+| `RESOLVING_MOVE` | The roll's movement and landing resolution run — engine-side, within one command. |
+| `BUY_DECISION` | The mover is on an unowned purchasable space: buy or pass to auction. |
+| `AUCTION` | A declined-buy auction is open (inside the decliner's turn). |
+| `ELIMINATION_AUCTIONS` | A bank-creditor estate is being sold sequentially. |
+| `SETTLING_DEBT` | A payment came due and cash was short; the debtor must raise cash. |
+| `TURN_MANAGEMENT` | Build/sell/mortgage/trade/surrender/end the turn. |
 
-Implemented in the slice (spec §4 rows 1–6 and 12):
+There are no implicit transitions: every legal `(turnPhase, command)` pair
+appears in the table in §4, and every command the engine accepts is in the
+registry in §3. `GAME_OVER` rejects every command with `GAME_IS_OVER` — the
+reducer checks this before authorization.
 
-```
-              ┌────────────────────────────────────────────────┐
-              │                AWAITING_ROLL                   │
-              │  ROLL (row 1) · HOLD (row 2, needs a token)    │
-              └───────┬────────────────────────────┬───────────┘
-                 ROLL │                         HOLD │ (consumes token)
-              ┌───────▼────────────┐                │
-              │   RESOLVING_MOVE   │  (automatic;   │
-              │  dice move, start  │   no movement) │
-              │  bonus, land rule  │                │
-              └───────┬────────────┘                │
-        unowned       │                             │
-        purchasable   ├──────────────────┐          │
-        ┌─────────────▼─────┐   ┌────────▼──────────┐
-        │   BUY_DECISION    │   │ TURN_MANAGEMENT   │
-        │ BUY (row 5) ·     │──▶│ END_TURN (row 12) │
-        │ PASS_TO_AUCTION   │   └────────┬──────────┘
-        │ (row 6, trans.)   │            │
-        └───────────────────┘            │
-                    ┌────────────────────┤
-                    ▼                    ▼
-        same player (doubles:        next player's
-        one extra cycle)             AWAITING_ROLL
-```
+## 2. State shape (per `GameState`)
 
-## Transition rows implemented by the slice
+- `version` — command-ordinal counter; every applied command increments it by
+  exactly one and equals `stateVersion` in the snapshot. Rejections and
+  idempotent replays change nothing.
+- `round` — the current round ordinal (schema v2). `END_TURN` that passes play
+  to the **first** seat of the next rotation increments it; the round cap is
+  evaluated at that handover, so the over-cap round never begins (Blitz's 15
+  is the last round that plays).
+- `turn` — global turn ordinal across the whole game, monotonic.
+- `activePlayerId`, `turnPhase`, `doublesCount` (0–3), `skipNextTurn` — turn
+  machinery. The third consecutive doubles skips the turn via `skipNextTurn`
+  (no movement on that roll), and the counter resets on any non-doubles roll,
+  on the third-doubles penalty, and when the turn passes.
+- `players[]` — `cash`, `position`, `heldTokens`, `bankrupt`; `currentRoundHoldsUsed`.
+- `owners`, `upgrades`, `mortgaged` — space records (`mortgaged` entries are
+  deleted, not false, when a flag is cleared).
+- `debt` — the open debt (debtor, creditor, amount, cause) or `null`.
+- `auction` — `null` or `{ reason: 'DECLINED' | 'BANK_ESTATE', spaceId, currentBid,
+  highBidderId, passedPlayerIds }`.
+- `estateSale` — `null` or `{ debtorId, pendingSpaceIds }` (schema v2) — the
+  bank-creditor estate queue, persisted so the interrupted turn resumes
+  exactly.
+- `pendingTrade` — at most one offer: `{ offerId, proposerId, recipientId,
+  terms, turnAnchor }`; `turnAnchor` is the proposer's turn counter at offer
+  time — the pure, wall-clock-free expiry signal.
+- `eventDeck` / `eventDiscard` — pile orders (ordinary state).
+- `rngState` — the Mulberry32 word, advanced and persisted by every command.
+- `processedCommandIds` — the idempotency ledger (ids only).
+- `mode`, `seed`, `gameId`, `victory`, `logs[]` (capped ring).
 
-| # | Phase | Command | Guard | Effects | Next |
-|---|---|---|---|---|---|
-| 1 | `AWAITING_ROLL` | `ROLL` | active player | 2d6 drawn (tracked RNG); doubles counter +1 on doubles | `RESOLVING_MOVE` |
-| 2 | `AWAITING_ROLL` | `HOLD` | holds a Hold token | token consumed; `TURN_SKIPPED` + `TURN_ENDED`; no roll, no movement | next player's `AWAITING_ROLL` |
-| 3 | `RESOLVING_MOVE` | *(automatic)* | — | token advances forward; **$250 start bonus** on any forward pass or landing of Gateway Terminal (never on backward movement — backward moves arrive with the Event Deck, PR 5); landed space resolves | `BUY_DECISION` if unowned purchasable, else `TURN_MANAGEMENT` |
-| 4 | `RESOLVING_MOVE` | *(automatic — third doubles)* | doubles counter reached 3 | **no dice movement**; token relocates to the nearest park (no bonus); skip-next-turn marked; counter resets | `TURN_ENDED` → next player's `AWAITING_ROLL` |
-| 5 | `BUY_DECISION` | `BUY` | cash ≥ list price | `PROPERTY_PURCHASED` (via `DIRECT`), full-price payment to the bank | `TURN_MANAGEMENT` |
-| 6 | `BUY_DECISION` | `PASS_TO_AUCTION` | — | transitional decline in the slice — the auction itself opens with PR 6 (spec §5) | `TURN_MANAGEMENT` |
-| 12 | `TURN_MANAGEMENT` | `END_TURN` | — | pending-offer expiry runs on the turn pass (spec §6); victory check seam (PR 8); **doubles grant one extra cycle** | same player's `AWAITING_ROLL` (doubles) · next player's `AWAITING_ROLL` · `GAME_OVER` (PR 8) |
-| 10 | `TURN_MANAGEMENT` | `OFFER_TRADE` / `ANSWER_TRADE` (as recipient, any phase while pending) | active player proposes; only the designated recipient answers (spec §6) | `TRADE_OFFERED` / `TRADE_ANSWERED` (accept is atomic; counter reverses roles and replaces the offer) | `TURN_MANAGEMENT` |
-| 13 | `SETTLING_DEBT` | `OFFER_TRADE` / `ANSWER_TRADE` | debtor (proposals) + recipient (answers) — Decision D-6 | raises cash toward the due amount by consent | `SETTLING_DEBT` until `SETTLE_DEBT` settles |
+## 3. Command registry (17 commands)
 
-Rows 7–9, 11, 14–17 (auction decisions, surrender, non-trade debt rows, elimination auctions, system transitions) land with PRs 6–8 and will be appended here as they are implemented; rows 10 and 13 (trading, spec §6) landed with PR 7.
+Shape validation rejects any other type. `HANDLERS` covers all 17 — no
+`COMMAND_NOT_IMPLEMENTED` stubs remain in Phase 1.
 
-## Trades (spec §6, PR 7)
+| Command | Actor | Turn phase | Effect summary |
+|---|---|---|---|
+| `START_GAME` | any live player | LOBBY | Builds the play state from `{ seed, mode, players }`; shuffles the deck; emits `GAME_CREATED`, `TURN_STARTED`. |
+| `SAVE_SNAPSHOT` | any live player | any phase (no phase gate; `GAME_OVER` rejects upstream) | Emits `SNAPSHOT_SAVED` (persistence itself is the sink/UI's job). |
+| `ROLL` | active | AWAITING_ROLL | 2d6; doubles counter; movement + landing resolution; or third-doubles park skip. |
+| `HOLD` | active | AWAITING_ROLL | Consumes a Hold token; skips the whole turn. |
+| `BUY` | active | BUY_DECISION | Full-price purchase. |
+| `PASS_TO_AUCTION` | active | BUY_DECISION | Opens a `DECLINED` auction. |
+| `BID` | eligible bidder | AUCTION · ELIMINATION_AUCTIONS | Ascending cash-backed bid (+$10 steps, ≤ cash). |
+| `PASS_BID` | eligible bidder | AUCTION · ELIMINATION_AUCTIONS | Binding pass; may resolve the auction. |
+| `BUILD` | active | TURN_MANAGEMENT | +1 level (≤ landmark) on a complete-district space. |
+| `SELL_UPGRADE` | active or debtor | TURN_MANAGEMENT · SETTLING_DEBT | −1 level; +50% of the price paid for that level. |
+| `MORTGAGE` | active or debtor | TURN_MANAGEMENT · SETTLING_DEBT | +50% of list price; level 0 required; no rent while mortgaged. |
+| `UNMORTGAGE` | active | TURN_MANAGEMENT | Pays 110% of list price. |
+| `OFFER_TRADE` | active (or debtor) | TURN_MANAGEMENT · SETTLING_DEBT | Replaces any pending offer; anchors expiry. |
+| `ANSWER_TRADE` | designated recipient | any PLAYING (offer pending) | ACCEPT (atomic transfer) · REJECT · COUNTER (roles swap, re-anchor). |
+| `SETTLE_DEBT` | debtor | SETTLING_DEBT | One atomic payment; requires `cash ≥ due`. |
+| `SURRENDER` | active (voluntary) or debtor | TURN_MANAGEMENT · SETTLING_DEBT | Voluntary or forced (hopeless) bankruptcy → waterfall. |
+| `END_TURN` | active | TURN_MANAGEMENT | Expires the pending offer; victory check; doubles re-roll or next player. |
 
-- **One pending offer at a time.** `state.trade` holds the single offer awaiting its recipient's answer; a proposal while one pends is rejected.
-- **Initiation:** the active player, in `TURN_MANAGEMENT` — or in `SETTLING_DEBT`, where the debtor proposes and answers trades by consent (Decision D-6).
-- **Answers:** only the designated recipient, in **any phase while pending** — answering never disturbs the active player's turn.
-- **Counter:** reverses proposer/recipient and replaces the pending offer under a fresh id; it is anchored to the new proposer's NEXT turn (its ordinal is stamped when that `TURN_STARTED` fires).
-- **Expiry — no wall clock:** an offer stores the turn ordinal whose end kills it; the shared turn-pass path (`advanceToNextTurn`, rows 2/4/12) compares that counter against `state.turn` and emits `TRADE_EXPIRED`. A doubles extra cycle is the same ordinal — an offer survives it.
-- **Acceptance is atomic:** both sides are re-validated against current state (ownership of every named space, cash capacity, solvency), then cash and ownership move in one all-or-nothing transition — no credit, cash ≥ 0 both sides after transfer. Mortgaged spaces and built levels ride with the space; the transferee pays the 110% unlock later (spec §6, §8).
+## 4. Transition table
 
-## Exact semantics pinned by tests
+| # | Phase | Command | Actor | Guard | Effects and events | Next |
+|---|---|---|---|---|---|---|
+| 1 | AWAITING_ROLL | ROLL | active | none | 2d6 drawn (meta carries the values); doubles counter +1 on doubles | RESOLVING_MOVE (same command continues) |
+| 2 | AWAITING_ROLL | HOLD | active | holds a Hold token | token consumed; `TOKEN_CONSUMED` + `TURN_SKIPPED` + `TURN_ENDED`; victory check | next player's AWAITING_ROLL (or GAME_OVER) |
+| 3 | RESOLVING_MOVE | *(automatic inside ROLL)* | system | — | token advances; **start bonus $250 on any forward pass or landing of Gateway Terminal** (never on backward movement); landed space resolves: rent (`RENT_PAID`), tax (`TAX_PAID`), service (`SERVICE_CHARGED`), or event (`CARD_DRAWN`/`CARD_EFFECT_APPLIED`); unowned purchasable → buy decision; short cash → debt entry (`DEBT_ENTERED`) | BUY_DECISION · SETTLING_DEBT · TURN_MANAGEMENT |
+| 4 | RESOLVING_MOVE | *(automatic — third consecutive doubles)* | system | doublesCount reached 3 | **no movement**; token to the nearest park; `skipNextTurn` marked; counter resets | TURN_ENDED → next player's AWAITING_ROLL |
+| 5 | BUY_DECISION | BUY | active | cash ≥ list price | `PROPERTY_PURCHASED` | TURN_MANAGEMENT |
+| 6 | BUY_DECISION | PASS_TO_AUCTION | active | — | `AUCTION_OPENED` (reason `DECLINED`) | AUCTION |
+| 7 | AUCTION | BID | eligible bidder | amount = current + $10k, ≤ cash | `AUCTION_BID` | AUCTION, or immediate resolution when one unpassed bidder remains |
+| 8 | AUCTION | PASS_BID | eligible bidder | — | `AUCTION_PASS` (binding); may resolve per the auction rules | AUCTION · TURN_MANAGEMENT |
+| 9 | TURN_MANAGEMENT | BUILD / SELL_UPGRADE / MORTGAGE / UNMORTGAGE | active | legality per `docs/RULES.md` | `UPGRADE_BUILT` / `UPGRADE_SOLD` / `MORTGAGE_TAKEN` / `MORTGAGE_LIFTED` | TURN_MANAGEMENT |
+| 10 | TURN_MANAGEMENT | OFFER_TRADE / ANSWER_TRADE | proposer / recipient | §3 registry guards | `TRADE_OFFERED` / `TRADE_ANSWERED` (accept/reject/counter) | TURN_MANAGEMENT |
+| 11 | TURN_MANAGEMENT | SURRENDER | active | none (voluntary) | the bankruptcy waterfall (§7) | elimination handling |
+| 12 | TURN_MANAGEMENT | END_TURN | active | — | pending offer expiry (`TRADE_EXPIRED`); victory check; **doubles re-roll** (counter < 3 → same player) | AWAITING_ROLL (same or next player) · GAME_OVER |
+| 13 | SETTLING_DEBT | SELL_UPGRADE / MORTGAGE | debtor | raises cash | liquidation events (unilateral, no consent) | SETTLING_DEBT until cash ≥ due |
+| 14 | SETTLING_DEBT | OFFER_TRADE / ANSWER_TRADE | debtor proposes; anyone answers | consented by acceptance | ordinary trade events | SETTLING_DEBT |
+| 15 | SETTLING_DEBT | SETTLE_DEBT | debtor | cash ≥ due | one atomic payment; `DEBT_SETTLED` | TURN_MANAGEMENT |
+| 16 | SETTLING_DEBT | SURRENDER | debtor | optional; **mandatory when hopeless** (`DEBT_HOPELESS` rejects all else) | the waterfall (§7) | elimination handling |
+| 17 | ELIMINATION_AUCTIONS | BID / PASS_BID | eligible bidders | reason `BANK_ESTATE` | per-property sequential auctions; unsold → bank unowned | after the last property: victory check, then the interrupted turn resumes at TURN_MANAGEMENT |
+| 18 | any PLAYING | *(system)* | system | elimination or end condition | `VICTORY_DECIDED` / `GAME_ENDED` | GAME_OVER — all commands reject with `GAME_IS_OVER` |
 
-- **Doubles grant exactly one extra turn-cycle.** After `TURN_MANAGEMENT` of a doubles roll, the same player returns to `AWAITING_ROLL` with the same turn ordinal (`TURN_STARTED` does not re-fire). The consecutive-doubles counter **resets** on any non-doubles roll, on the third-doubles penalty, and when the turn passes to the next player.
-- **Third consecutive doubles:** the roll does not move the token by its dice; the token walks to the nearest park (wrapping forward if already on a park), the player's **next** turn is skipped (consumed at the following handover as `TURN_SKIPPED` + `TURN_ENDED` with reason `THIRD_DOUBLES`), and the counter resets. The relocation itself never pays the Gateway bonus.
-- **Hold token:** consumed by the holder's own `HOLD` command in `AWAITING_ROLL`; the entire turn is skipped — no roll, no movement, no management phase. End-of-turn victory evaluation (PR 8) still runs.
-- **Start bonus:** $250, paid on any *forward* pass or landing of Gateway Terminal — dice moves and (from PR 5) card moves; never on backward movement, never on token placement at game start, never on the third-doubles park relocation.
-- **Buy at list price:** `BUY` requires `cash ≥ listPrice` and pays the bank in the same transition; the property's ownership is set atomically with the payment.
-- **Hot-seat privacy:** the UI gates the board behind a pass-device screen whenever the active player changes (spec §11) — a presentation concern; the engine has no notion of visibility.
+**Doubles semantics:** doubles grant exactly one extra cycle (row 12); the
+counter resets on any non-doubles roll, on the third-doubles penalty, and when
+the turn passes. There is no unlimited re-roll chain.
 
-## Commands and their phases (slice)
+**Card movement:** "move to" cards count as landing on the target (forward
+moves grant the Gateway start bonus; backward moves never do) and can trigger
+rent, debt, and the buy decision — all inside `RESOLVING_MOVE`.
 
-| Command | Legal phases | Handler |
+**Pending offers:** survive turn boundaries; expire exactly when the
+proposer's turn next ends (`turnAnchor` comparison — state-only, no timers) or
+when a participant is eliminated/bankrupt (`TRADE_CANCELLED`). A counteroffer
+replaces the pending offer and re-anchors expiry to the new proposer.
+
+## 5. Event catalog (35 types)
+
+Stamps: every event carries a gapless per-game `sequence`, the composite
+`eventId = <gameId>-e<sequence>`, the producing `commandId`, and the current
+`rulesVersion`. `meta` records draw **results** (dice values, card ids) —
+never raw PRNG words.
+
+| Family | Events |
+|---|---|
+| Lifecycle | `GAME_CREATED`, `TURN_STARTED`, `TURN_SKIPPED`, `TURN_ENDED`, `SNAPSHOT_SAVED`, `GAME_ENDED`, `VICTORY_DECIDED` |
+| Movement | `DICE_ROLLED`, `PLAYER_MOVED`, `START_BONUS_PAID` |
+| Ownership & money | `PROPERTY_PURCHASED`, `RENT_PAID`, `TAX_PAID`, `SERVICE_CHARGED` |
+| Event deck | `CARD_DRAWN`, `CARD_EFFECT_APPLIED`, `TOKEN_CONSUMED` |
+| Development | `UPGRADE_BUILT`, `UPGRADE_SOLD`, `MORTGAGE_TAKEN`, `MORTGAGE_LIFTED` |
+| Auctions | `AUCTION_OPENED`, `AUCTION_BID`, `AUCTION_PASS`, `AUCTION_RESOLVED`, `AUCTION_CLOSED_UNSOLD` |
+| Trading | `TRADE_OFFERED`, `TRADE_ANSWERED`, `TRADE_EXPIRED`, `TRADE_CANCELLED` |
+| Debt & bankruptcy | `DEBT_ENTERED`, `DEBT_SETTLED`, `PLAYER_BANKRUPT`, `ASSETS_TRANSFERRED`, `PLAYER_ELIMINATED` |
+
+Commands map many-to-many: `ROLL` may emit dice/move/bonus/rent/tax/card
+events plus `DEBT_ENTERED`; `END_TURN` may emit `TURN_ENDED` +
+`VICTORY_DECIDED` + `GAME_ENDED`; a skipped turn emits `TURN_SKIPPED` +
+`TURN_ENDED`.
+
+## 6. The §17.2 structural pin — settleable debt never emits bankruptcy
+
+Per the approved spec's §17.2 amendment, the debt-settlement surfaces are
+**structurally unable** to produce bankruptcy:
+
+- Every engine surface declares its own event vocabulary
+  (`EconomyEventInput`, `SettlementEventInput`, `AuctionEventInput`,
+  `DevelopmentEventInput`, `TradeEventInput`). None of them contains
+  `PLAYER_BANKRUPT`, `ASSETS_TRANSFERRED`, or `PLAYER_ELIMINATED` — only
+  `EndgameEventInput` (the waterfall, estate sales, victory) declares those
+  members, and only `SURRENDER` reaches it (pinned by type-level `Extract<…>`
+  exclusivity tests and runtime negative tests in
+  `tests/game/debt.test.ts`, `tests/game/auction.test.ts`,
+  `tests/game/trading.test.ts`).
+- **Hopeless detection is pure:** `isDebtHopeless` compares the due amount
+  against cash + maximum liquidation (sell-backs at 50% of price paid,
+  mortgages at 50% of list). When short, the reducer's veto rejects every
+  command except `SURRENDER` with `DEBT_HOPELESS` — bankruptcy is forced
+  immediately, never a stalemate and never a half-applied state.
+- **History:** PR 5 shipped the transitional seam (typed `DEBT_UNRESOLVABLE`
+  rejection; the game paused in `SETTLING_DEBT` instead of exhibiting partial
+  bankruptcy). The endgame PR replaced that seam with the `DEBT_HOPELESS` veto
+  plus the full waterfall, and acceptance tests exist on both sides of the
+  replacement.
+
+## 7. The bankruptcy waterfall (SURRENDER — voluntary or forced)
+
+Each step is its own tested, replayable transition, emitted only by
+`EndgameEventInput` handlers:
+
+1. **Cash transfer** — the debtor's entire cash goes to the creditor (the
+   bank when the bank is the creditor).
+2. **Upgrade liquidation** — every level sells back at 50% of the price
+   originally paid; proceeds go to the creditor (for a bank creditor, levels
+   are removed with no payment).
+3. **Property transfer** — to a **player** creditor: all owned spaces transfer
+   **with mortgage flags intact** (the creditor may unmortgage later at 110%).
+4. **Bank repossession (bank creditor)** — owned spaces return to the bank
+   unowned, and their **mortgage flags are cleared** (the mortgage liability
+   died with the ownership; repossessed spaces are clean for the next buyer).
+   Pinned by test (`tests/game/endgame.test.ts`).
+5. **Estate sale (bank creditor)** — each estate space is sold in one
+   sequential `ELIMINATION_AUCTIONS` auction under the ordinary cash-backed
+   auction rules; the queue persists in `estateSale.pendingSpaceIds`
+   (schema v2) so the interrupted turn resumes exactly. Unsold spaces return
+   to the bank unowned.
+6. **Elimination** — the player is marked `bankrupt`, removed from turn order,
+   tokens discarded (`PLAYER_ELIMINATED`); assets move via
+   `ASSETS_TRANSFERRED`; `PLAYER_BANKRUPT` marks the waterfall's entry.
+7. **Trade cancellation** — every open offer involving the eliminated player
+   fires `TRADE_CANCELLED`.
+8. **Victory evaluation** — immediately after elimination (last-solvent
+   check), then the standard end conditions (§8).
+
+Phase 1 debts arise only from `RESOLVING_MOVE` (the mover pays), so the
+debtor is always the active player and their turn ends without a management
+phase. Elimination auctions complete before play resumes. A future
+non-active bankruptcy would resolve identically: elimination handling, then
+the turn owner continues.
+
+## 8. Victory
+
+Evaluated (a) at every elimination, (b) at every `TURN_ENDED` against the
+mode's net-worth target, and (c) at the round-cap handover — when a roll would
+start a round beyond the cap, the richest player wins (ties share the
+victory). The over-cap round never begins (`state.round` never exceeds the
+cap; see the Blitz cap test). First condition reached ends the game:
+`VICTORY_DECIDED` + `GAME_ENDED`, phase `GAME_OVER`.
+
+## 9. Snapshot schema history
+
+`GameSnapshot` = `{ schemaVersion, rulesVersion, gameId, seed, stateVersion,
+state }`. Loading goes through `parseSnapshot`, which refuses anything it
+cannot interpret with a typed reason — never a silent load.
+
+| Schema version | Introduced | State shape |
 |---|---|---|
-| `START_GAME` | `LOBBY` | seats tokens at Gateway Terminal, first `TURN_STARTED` |
-| `ROLL` | `AWAITING_ROLL` | row 1 + row 3/4 resolution |
-| `HOLD` | `AWAITING_ROLL` | row 2 |
-| `BUY` | `BUY_DECISION` | row 5 |
-| `PASS_TO_AUCTION` | `BUY_DECISION` | row 6 (transitional; real auctions in PR 6) |
-| `SETTLE_DEBT` | `SETTLING_DEBT` | row 14 (PR 5) |
-| `SELL_UPGRADE` / `MORTGAGE` | `SETTLING_DEBT` | debtor liquidation rows (PR 5) |
-| `OFFER_TRADE` | `TURN_MANAGEMENT`, `SETTLING_DEBT` | rows 10 and 13 (PR 7) |
-| `ANSWER_TRADE` | any phase while an offer is pending | row 10 (PR 7) |
-| `END_TURN` | `TURN_MANAGEMENT` | row 12 |
-| `SAVE_SNAPSHOT` | any phase | snapshot persistence seam (PR 2) |
+| **v1** | Engine foundation (PR 2) | The original `GameState`: all base fields, **no** `round`, **no** `estateSale`. |
+| **v2** | Bankruptcy waterfall (PR 9) — current | Adds **round tracking** (`state.round`) and the **persisted estate-sale queue** (`estateSale.pendingSpaceIds`), with the auction-reason ⇔ turn-phase cross-invariants (`AUCTION` ⇔ a `DECLINED` auction is open; `ELIMINATION_AUCTIONS` ⇔ a `BANK_ESTATE` auction is open). |
 
-All other Phase 1 commands (`BUILD`, `UNMORTGAGE`, `SURRENDER`) still reject with `COMMAND_NOT_IMPLEMENTED` until PR 8 lands.
+There is no migration path from v1: unknown `schemaVersion` (older or newer)
+is refused with `UNKNOWN_SCHEMA_VERSION` and the UI offers a new game — a
+deliberate rollback-safe gate, because an old build must never be handed a
+state shape it cannot interpret. A regression test pins
+`SNAPSHOT_SCHEMA_VERSION === 2` so a future version bump is a conscious,
+reviewed change (`tests/game/endgame.test.ts`).
+
+## 10. Invariants the engine guarantees
+
+1. Every state change flows through `applyCommand`; the input state is never
+   mutated (rejections included).
+2. `state.version` counts applied commands; rejections and idempotent
+   duplicates change nothing.
+3. Event sequences are gapless; replay from `{ seed, ordered commands }`
+   reproduces the state hash exactly.
+4. Settleable-debt paths cannot emit bankruptcy events (§6).
+5. Money is never created outside the named formulas (`docs/RULES.md`) —
+   no credit, no negative cash after any applied command.
+6. A debt is either settled or bankrupted before any victory evaluation —
+   net worth is always evaluated on settled state.

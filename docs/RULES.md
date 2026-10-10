@@ -75,8 +75,8 @@ district.
 
 A player who owns **all three properties of a district** has a **complete
 district**: its rents **double (×2)**, and completing the district is the
-prerequisite for building upgrades on it (the BUILD rules in a later engine PR
-enforce both).
+prerequisite for building upgrades on it (the BUILD rules — see §7 — enforce
+both).
 
 ## 3. Rent
 
@@ -123,7 +123,9 @@ Two assessment spaces, both paid to the **bank**:
 - Maximum level is **4**, the **landmark** (rent multiplier ×20).
 - Building requires the owner to hold the complete district (§2).
 - Selling a built level back to the bank returns **50% of the price originally
-  paid for that level** (§11 covers forced sell-backs in debt).
+  paid for that level** (the same rate applies to forced sell-backs during
+  debt settlement and in the bankruptcy waterfall — see
+  `docs/GAME_STATE_MACHINE.md` §6–§7).
 
 ## 8. Mortgages
 
@@ -132,6 +134,12 @@ Two assessment spaces, both paid to the **bank**:
 - **Lift** a mortgage: pay the bank **110% of the list price**.
 - A mortgaged property collects no rent (§3). Mortgaged spaces may still be
   traded (the transferee later pays the 110% to lift).
+- **Bank repossession clears mortgages:** when a bankruptcy transfers an
+  estate to the **bank**, mortgage flags are cleared with the ownership — the
+  liability dies with the ownership, and repossessed spaces return clean for
+  the next buyer. Estates transferred to a **player** creditor keep their
+  mortgage flags intact (that creditor lifts them at the 110% rate).
+  See `docs/GAME_STATE_MACHINE.md` §7.
 
 ## 9. Net worth — the canonical formula
 
@@ -219,7 +227,8 @@ Victory — the first condition reached ends the game:
    player by net worth wins** (ties share the victory).
 
 Eliminated players are out of turn order; their estates settle through the
-bankruptcy process (specified for a later engine PR).
+bankruptcy waterfall and (for bank creditors) elimination auctions — fully
+specified and implemented; see `docs/GAME_STATE_MACHINE.md` §6–§7.
 
 ## 13. Originality
 
