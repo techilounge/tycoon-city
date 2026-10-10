@@ -13,8 +13,8 @@
  */
 
 import type { MoveDirection } from './events';
-import type { SpaceId } from './types';
-import type { AssessmentSpace, BoardSpace, CardMoveEffect } from './board-v1';
+import type { GameState, PlayerId, SpaceId } from './types';
+import { BOARD_SPACES, isPurchasable, type AssessmentSpace, type BoardSpace, type CardMoveEffect, type PurchasableSpace } from './board-v1';
 
 /** Rent multiplier per upgrade level, indexed 0–4 (spec §8). Level 4 is the
  *  landmark; its ×20 is Decision D-3, flagged provisional pending PR 9. */
@@ -252,4 +252,27 @@ export function netWorth({ cash, holdings }: NetWorthInput): number {
     total += upgradeSellBackProceeds(holding.cumulativeUpgradeSpend);
   }
   return total;
+}
+
+/**
+ * The canonical net worth read straight from GameState — the adapter every
+ * caller (victory evaluation, leaderboards, results) uses, so no call site
+ * ever re-derives holdings itself (spec §9: one canonical function). A
+ * player with no owned spaces contributes cash alone.
+ */
+export function netWorthFromState(state: GameState, playerId: PlayerId): number {
+  const player = state.players.find((candidate) => candidate.id === playerId);
+  if (!player) throw new Error(`rules-v1: netWorthFromState for unknown player ${playerId}`);
+  const holdings: NetWorthHolding[] = [];
+  for (const space of BOARD_SPACES) {
+    if (!isPurchasable(space) || state.owners[space.id] !== playerId) continue;
+    const purchasable: PurchasableSpace = space;
+    const level = state.upgrades[purchasable.id] ?? 0;
+    holdings.push({
+      listPrice: purchasable.listPrice,
+      mortgaged: state.mortgaged[purchasable.id] ?? false,
+      cumulativeUpgradeSpend: level * upgradeCost(purchasable.listPrice),
+    });
+  }
+  return netWorth({ cash: player.cash, holdings });
 }

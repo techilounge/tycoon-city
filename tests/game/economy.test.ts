@@ -92,12 +92,14 @@ function craftedState(overrides: {
     debt: overrides.debt ?? null,
     auction: null,
     trade: null,
+    estateSale: null,
     rulesVersion: RULES_VERSION,
     seed: 1,
     rngState: overrides.rngState ?? 1,
     players: overrides.players ?? [mkPlayer({ id: 'Ada', seat: 0 }), mkPlayer({ id: 'Grace', seat: 1 })],
     activePlayerId: overrides.activePlayerId !== undefined ? overrides.activePlayerId : 'Ada',
     turn: 3,
+    round: 1,
     lastEventSequence: 40,
     processedCommandIds: [],
   };
@@ -435,9 +437,9 @@ describe('SETTLE_DEBT', () => {
     assert.deepEqual(state, before);
   });
 
-  it('a hopeless short-cash state rejects DEBT_UNRESOLVABLE before the handler runs', () => {
+  it('a hopeless short-cash state rejects DEBT_HOPELESS before the handler runs', () => {
     const state = settlingState({ cash: 50 }); // $50 max recoverable < $60 due
-    assert.equal(applyErr(state, 'SETTLE_DEBT'), 'DEBT_UNRESOLVABLE');
+    assert.equal(applyErr(state, 'SETTLE_DEBT'), 'DEBT_HOPELESS');
   });
 
   it('rejects with INVALID_PHASE outside SETTLING_DEBT', () => {

@@ -83,12 +83,14 @@ function craftedState(overrides: {
     debt: overrides.debt ?? null,
     auction: null,
     trade: null,
+    estateSale: null,
     rulesVersion: RULES_VERSION,
     seed: 1,
     rngState: overrides.rngState ?? 1,
     players: overrides.players ?? [mkPlayer({ id: 'Ada', seat: 0 }), mkPlayer({ id: 'Grace', seat: 1 })],
     activePlayerId: overrides.activePlayerId ?? overrides.players?.[0]?.id ?? 'Ada',
     turn: 3,
+    round: 1,
     lastEventSequence: 10,
     processedCommandIds: overrides.processedCommandIds ?? [],
   } as GameState;
@@ -143,7 +145,7 @@ describe('hopeless-debt rejection seam', () => {
     return { ...state, players: state.players.map((p) => (p.id === 'Ada' ? { ...p, cash: 20 } : p)) };
   }
 
-  it('rejects every command with DEBT_UNRESOLVABLE when cash plus maximum liquidation falls short', () => {
+  it('refuses every liquidation command with DEBT_HOPELESS when cash plus maximum liquidation falls short', () => {
     const state = hopelessStateRaw();
     assert.equal(isDebtHopeless(state, RENT_DUE), true);
     const before = structuredClone(state);
@@ -152,12 +154,11 @@ describe('hopeless-debt rejection seam', () => {
     for (const type of [
       'ROLL', 'HOLD', 'BUY', 'PASS_TO_AUCTION', 'SETTLE_DEBT', 'SELL_UPGRADE', 'MORTGAGE', 'END_TURN',
       'START_GAME', 'SAVE_SNAPSHOT',
-      // Unimplemented commands are also outranked by the state veto.
-      'BID', 'PASS_BID', 'BUILD', 'UNMORTGAGE', 'OFFER_TRADE', 'ANSWER_TRADE', 'SURRENDER',
+      'BID', 'PASS_BID', 'BUILD', 'UNMORTGAGE', 'OFFER_TRADE', 'ANSWER_TRADE',
     ] as const) {
       const payload = spaceCommands.has(type) ? { spaceId: 'foundry-anvil' } : {};
       const code = applyErrCode(state, type, { payload });
-      assert.equal(code, 'DEBT_UNRESOLVABLE', `${type} must be refused by the hopeless-debt veto`);
+      assert.equal(code, 'DEBT_HOPELESS', `${type} must be refused by the hopeless-debt veto`);
     }
     assert.deepEqual(state, before, 'the veto must change nothing');
   });
@@ -170,10 +171,28 @@ describe('hopeless-debt rejection seam', () => {
     assert.equal(isDebtHopeless({ ...state, players: state.players.map((p) => (p.id === 'Ada' ? { ...p, cash: 20 } : p)) }, RENT_DUE), true);
   });
 
-  it('the state veto outranks COMMAND_NOT_IMPLEMENTED — SURRENDER reads DEBT_UNRESOLVABLE until PR 8', () => {
+  it('the PR 5 rejection seam is replaced: SURRENDER resolves a hopeless debt through the waterfall', () => {
     const state = hopelessStateRaw();
-    const code = applyErrCode(state, 'SURRENDER');
-    assert.equal(code, 'DEBT_UNRESOLVABLE');
+    const result = applyCommand(state, makeCommand(state, 'SURRENDER'), rngForState(state.rngState));
+    assert.ok(result.ok, `SURRENDER must apply from a hopeless debt: ${result.ok ? '' : result.error.message}`);
+    if (!result.ok) return;
+    // Bank-creditor estate: cash went to the bank, Anvil enters the estate
+    // sale, Ada is bankrupt and out of turn order.
+    assert.deepEqual(
+      eventTypes(result.events).filter((t) => t === 'PLAYER_BANKRUPT' || t === 'PLAYER_ELIMINATED' || t === 'ASSETS_TRANSFERRED'),
+      ['PLAYER_BANKRUPT', 'ASSETS_TRANSFERRED', 'PLAYER_ELIMINATED'],
+    );
+    assert.equal(cashOf(result.state, 'Ada'), 0);
+    const ada = result.state.players.find((p) => p.id === 'Ada');
+    assert.ok(ada);
+    assert.equal(ada.eliminated, true);
+    // Two-player fixture: Ada's elimination makes Grace the last solvent
+    // player, so victory evaluation ends the game immediately (spec §4 row
+    // 17) — the estate sale never opens. Multi-player estate-sale coverage
+    // lives in the endgame suites.
+    assert.deepEqual(eventTypes(result.events).filter((t) => t === 'VICTORY_DECIDED' || t === 'GAME_ENDED'), ['VICTORY_DECIDED', 'GAME_ENDED']);
+    assert.equal(result.state.phase, 'GAME_OVER');
+    assert.equal(result.state.turnPhase, null);
   });
 
   it('keeps pipeline order — version conflict and unknown actor outrank the veto', () => {
@@ -247,10 +266,14 @@ describe('SELL_UPGRADE in SETTLING_DEBT', () => {
     assert.equal(applyErrCode(state, 'SELL_UPGRADE', { actor: 'Grace', payload: { spaceId: 'foundry-anvil' } }), 'NOT_AUTHORIZED');
   });
 
-  it('is invalid outside SETTLING_DEBT (the TURN_MANAGEMENT leg is PR 8)', () => {
+  it('also applies in TURN_MANAGEMENT — the PR 8 management leg (50% of price paid)', () => {
     const state = debtState({ owners: { 'foundry-anvil': 'Ada' }, upgrades: { 'foundry-anvil': 2 } });
     const managing = { ...state, turnPhase: 'TURN_MANAGEMENT' as const, debt: null };
-    assert.equal(applyErrCode(managing, 'SELL_UPGRADE', { payload: { spaceId: 'foundry-anvil' } }), 'INVALID_PHASE');
+    const { state: s1, events } = applyOk(managing, 'SELL_UPGRADE', { payload: { spaceId: 'foundry-anvil' } });
+    assert.deepEqual(eventTypes(events), ['UPGRADE_SOLD']);
+    assert.equal(cashOf(s1, 'Ada'), 1500 + 25);
+    assert.equal(s1.upgrades['foundry-anvil'], 1);
+    assert.equal(s1.turnPhase, 'TURN_MANAGEMENT');
   });
 
   it('liquidation to settlement: two sell-backs clear the debt atomically', () => {
@@ -332,10 +355,14 @@ describe('MORTGAGE in SETTLING_DEBT', () => {
     assert.equal(applyErrCode(state, 'MORTGAGE', { actor: 'Grace', payload: { spaceId: 'foundry-anvil' } }), 'NOT_AUTHORIZED');
   });
 
-  it('is invalid outside SETTLING_DEBT', () => {
+  it('also applies in TURN_MANAGEMENT — the PR 8 management leg (50% of list price)', () => {
     const state = debtState({ owners: { 'foundry-anvil': 'Ada' } });
     const managing = { ...state, turnPhase: 'TURN_MANAGEMENT' as const, debt: null };
-    assert.equal(applyErrCode(managing, 'MORTGAGE', { payload: { spaceId: 'foundry-anvil' } }), 'INVALID_PHASE');
+    const { state: s1, events } = applyOk(managing, 'MORTGAGE', { payload: { spaceId: 'foundry-anvil' } });
+    assert.deepEqual(eventTypes(events), ['MORTGAGE_TAKEN']);
+    assert.equal(cashOf(s1, 'Ada'), 1500 + 50);
+    assert.equal(s1.mortgaged['foundry-anvil'], true);
+    assert.equal(s1.turnPhase, 'TURN_MANAGEMENT');
   });
 
   it('liquidation to settlement with a player creditor conserves money', () => {
@@ -406,7 +433,7 @@ describe('settlement invariants', () => {
     assert.deepEqual(eventTypes(events).sort(), ['DEBT_SETTLED', 'MORTGAGE_TAKEN', 'MORTGAGE_TAKEN', 'UPGRADE_SOLD', 'UPGRADE_SOLD']);
   });
 
-  it('ELIMINATION_AUCTIONS is unreachable in this rules build', () => {
+  it('the settleable path never reaches ELIMINATION_AUCTIONS (elimination lives behind SURRENDER, PR 8)', () => {
     const state = debtState({
       owners: { 'foundry-anvil': 'Ada' },
       upgrades: { 'foundry-anvil': 2 },
@@ -468,6 +495,9 @@ describe('settlement invariants', () => {
 // §17.2 type-level negative: the settlement surface structurally cannot emit
 // bankruptcy events. Widening either union with a banned member flips the
 // annotated constant to false — a compile error, not just a test failure.
+// PR 8 lifted the RUNTIME ban: hopeless debts resolve through the waterfall
+// in engine/endgame.ts, which owns the bankruptcy event types (pinned there).
+// The structural ban on these two PR 5 unions remains by design.
 
 type BannedEventType = 'PLAYER_BANKRUPT' | 'PLAYER_ELIMINATED' | 'ASSETS_TRANSFERRED';
 type SettlementBanHolds = Extract<SettlementEventInput['type'], BannedEventType> extends never ? true : false;

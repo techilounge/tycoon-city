@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LocalCommandSink, InMemorySnapshotStore } from '../../src/lib/game/engine/transport';
+import { SNAPSHOT_SCHEMA_VERSION } from '../../src/lib/game/types';
 import type { AnyGameEvent } from '../../src/lib/game/events';
 import { makeCommand, commandId, PLAYER_IDS, GAME_ID, SEED } from './helpers';
 
@@ -77,7 +78,7 @@ test('transport: SnapshotStore persists on SAVE_SNAPSHOT and reloads a validated
   const loaded = store.load(GAME_ID);
   assert.ok(loaded, 'SAVE_SNAPSHOT persisted a snapshot');
   if (loaded) {
-    assert.equal(loaded.schemaVersion, 1);
+    assert.equal(loaded.schemaVersion, SNAPSHOT_SCHEMA_VERSION);
     assert.equal(loaded.stateVersion, 2, 'version after START_GAME + SAVE_SNAPSHOT');
     assert.equal(loaded.state.phase, 'PLAYING');
     assert.deepEqual(loaded.state, sink.state());
@@ -88,7 +89,7 @@ test('transport: SnapshotStore persists on SAVE_SNAPSHOT and reloads a validated
 test('transport: sink exposes a schema-stamped snapshot of the current state', () => {
   const sink = LocalCommandSink.create({ gameId: GAME_ID, seed: SEED, playerIds: [...PLAYER_IDS] });
   const snapshot = sink.snapshot();
-  assert.equal(snapshot.schemaVersion, 1);
+  assert.equal(snapshot.schemaVersion, SNAPSHOT_SCHEMA_VERSION);
   assert.equal(snapshot.stateVersion, 0);
   assert.equal(snapshot.gameId, GAME_ID);
 });

@@ -24,7 +24,9 @@ import { moveForward, nearestParkIndex } from './movement';
 import { resolveLanding } from './economy';
 import { isDebtHopeless, mortgageHandler, settleDebtHandler, sellUpgradeHandler } from './debt';
 import { bidHandler, passBidHandler, passToAuctionHandler, requireAuctionableLandedSpace } from './auctions';
-import { answerTradeHandler, expireAnchoredOffer, offerTradeHandler, resolveAnchorAtTurnStart } from './trading';
+import { buildHandler, mortgageManagementHandler, sellUpgradeManagementHandler, spaceIdPayload, unmortgageHandler } from './development';
+import { concludeTurn, estateBidHandler, estatePassBidHandler, evaluateNetWorthTarget, surrenderHandler } from './endgame';
+import { answerTradeHandler, offerTradeHandler } from './trading';
 import type { GameStateDraft, DraftPlayer } from './draft';
 import { requirePlayer } from './draft';
 
@@ -100,16 +102,22 @@ export function applyCommand(state: GameState, command: GameCommand, rng: Random
     return err(new RuleError('GAME_IS_OVER', 'the game is over; no commands are accepted'));
   }
 
-  // (6b) Transitional settlement seam (spec §17.2): a debt that cash plus the
-  // maximum liquidation value cannot cover pauses the game — every command
-  // rejects atomically with a typed error and the state stays deep-equal
-  // unchanged. PR 8's SURRENDER replaces this rejection with the waterfall;
-  // negative tests pin both the rejection and the emitted-event ban.
-  if (state.turnPhase === 'SETTLING_DEBT' && state.debt !== null && isDebtHopeless(state, state.debt)) {
+  // (6b) Hopeless-debt veto (spec §7, replacing PR 5's transitional
+  // DEBT_UNRESOLVABLE seam): a debt that cash plus the maximum liquidation
+  // value cannot cover admits exactly one command — SURRENDER (§7: never a
+  // stalemate). Everything else rejects atomically and the state stays
+  // deep-equal unchanged. SURRENDER passes this gate and runs the full
+  // bankruptcy waterfall in ./endgame.
+  if (
+    command.type !== 'SURRENDER' &&
+    state.turnPhase === 'SETTLING_DEBT' &&
+    state.debt !== null &&
+    isDebtHopeless(state, state.debt)
+  ) {
     return err(
       new RuleError(
-        'DEBT_UNRESOLVABLE',
-        `the ${state.debt.reason.toLowerCase()} debt of ${state.debt.amountDue} exceeds everything player ${state.debt.debtorId} can raise; settlement is impossible in this rules build`,
+        'DEBT_HOPELESS',
+        `the ${state.debt.reason.toLowerCase()} debt of ${state.debt.amountDue} exceeds everything player ${state.debt.debtorId} can raise — surrender or settle`,
         { debtorId: state.debt.debtorId, creditorId: state.debt.creditorId, amountDue: state.debt.amountDue },
       ),
     );
@@ -161,8 +169,9 @@ export function applyCommand(state: GameState, command: GameCommand, rng: Random
  * (PR 6), and designated trade recipients (PR 7): OFFER_TRADE stays on the
  * active-player default — the debtor IS the active player during
  * SETTLING_DEBT, so row 13's settlement proposals need no special case.
- * Remaining actor classes join with PR 8's elimination-auction and estate
- * cases.
+ * Bidders and recipients cover the auction and estate-sale surfaces alike:
+ * authorization is phase-independent by design (an open auction accepts its
+ * eligible bidders whether it is a decliner's auction or a bank estate's).
  */
 export function canAct(state: GameState, command: GameCommand): boolean {
   const actor = state.players.find((player) => player.id === command.actorId);
@@ -205,6 +214,7 @@ function startGameHandler(draft: GameStateDraft): readonly AnyEventInput[] {
   draft.phase = 'PLAYING';
   draft.turnPhase = 'AWAITING_ROLL';
   draft.turn = 1;
+  draft.round = 1;
   draft.activePlayerId = first.id;
   return [{ type: 'TURN_STARTED', payload: { playerId: first.id, turn: 1 } }];
 }
@@ -212,53 +222,6 @@ function startGameHandler(draft: GameStateDraft): readonly AnyEventInput[] {
 function saveSnapshotHandler(draft: GameStateDraft): readonly AnyEventInput[] {
   // stateVersion is the version this command produces (pre-increment view).
   return [{ type: 'SNAPSHOT_SAVED', payload: { stateVersion: draft.version + 1 } }];
-}
-
-/**
- * Hand the turn to the next player in seat order — the shared tail of rows
- * 2, 4, and 12. The doubles counter resets on a turn pass (spec §4); marked
- * players have their next-turn skip consumed as TURN_SKIPPED + TURN_ENDED
- * pairs; the first unmarked player begins the next turn ordinal. Skipped
- * players consume an ordinal — a round is one pass through the seats (PR 8's
- * round cap builds on this). Prerequisite: TURN_ENDED for the ending player
- * was already emitted by the caller.
- */
-function advanceToNextTurn(draft: GameStateDraft, fromPlayerId: PlayerId): readonly AnyEventInput[] {
-  draft.doublesCount = 0;
-  const from = requirePlayer(draft, fromPlayerId);
-  const count = draft.players.length;
-  const events: AnyEventInput[] = [];
-  // Pending-offer expiry (spec §6): this is the one path every turn-passing
-  // row (2, 4, 12) shares, so it is where an offer anchored to the ending
-  // turn dies — a pure turn-counter comparison, no wall clock. A doubles
-  // extra cycle never passes through here (same ordinal, no handover), so
-  // an offer survives it.
-  expireAnchoredOffer(draft, events);
-  let turnCounter = draft.turn;
-  let chosen: DraftPlayer | undefined;
-  // players is seat-ordered by construction (createGame maps seat = index).
-  // Two laps bound the walk: one lap can consume every mark (when all players
-  // are marked), so the first unmarked seat may only appear on the second.
-  for (let step = 1; step <= 2 * count && !chosen; step++) {
-    const candidate = draft.players[(from.seat + step) % count];
-    turnCounter += 1;
-    if (!candidate.skipNextTurn) {
-      chosen = candidate;
-    } else {
-      candidate.skipNextTurn = false;
-      events.push({ type: 'TURN_SKIPPED', payload: { playerId: candidate.id, reason: 'THIRD_DOUBLES' } });
-      events.push({ type: 'TURN_ENDED', payload: { playerId: candidate.id, turn: turnCounter } });
-    }
-  }
-  if (!chosen) throw new Error('engine bug: turn handover found no eligible player');
-  draft.turn = turnCounter;
-  draft.activePlayerId = chosen.id;
-  draft.turnPhase = 'AWAITING_ROLL';
-  // A counter anchors to its proposer's NEXT turn (spec §6): that turn
-  // begins here — stamp its ordinal into the offer so its end expires it.
-  resolveAnchorAtTurnStart(draft, chosen.id, turnCounter);
-  events.push({ type: 'TURN_STARTED', payload: { playerId: chosen.id, turn: turnCounter } });
-  return events;
 }
 
 /** Row 1: roll two d6; row 3 resolves the move automatically inside the same
@@ -290,7 +253,8 @@ function rollHandler(draft: GameStateDraft, command: GameCommand, rng: RandomSou
     // forward park walk crosses Gateway Terminal (row 3 grants the bonus on
     // dice and card moves only; genre penalty convention). Pinned by test.
     events.push({ type: 'TURN_ENDED', payload: { playerId: player.id, turn: draft.turn } });
-    events.push(...advanceToNextTurn(draft, player.id));
+    // Victory check + handover: the shared tail in ./endgame (spec §4, §8).
+    concludeTurn(draft, player.id, events);
     return events;
   }
 
@@ -334,8 +298,9 @@ function holdHandler(draft: GameStateDraft, command: GameCommand): readonly AnyE
     { type: 'TURN_SKIPPED', payload: { playerId: player.id, reason: 'HOLD_TOKEN' } },
     { type: 'TURN_ENDED', payload: { playerId: player.id, turn: draft.turn } },
   ];
-  // Victory check seam (PR 8): evaluated at every TURN_ENDED (spec §4, §8).
-  events.push(...advanceToNextTurn(draft, player.id));
+  // Victory check + handover: the shared tail in ./endgame evaluates the
+  // net-worth target at every TURN_ENDED (spec §4, §8).
+  concludeTurn(draft, player.id, events);
   return events;
 }
 
@@ -382,18 +347,24 @@ function endTurnHandler(draft: GameStateDraft, command: GameCommand): readonly A
   // AWAITING_ROLL (spec §4 row 12). The counter cannot be 3 here — the third
   // consecutive double ends the turn inside ROLL (row 4).
   // Pending offers survive the extra cycle (same ordinal) and expire when
-  // the turn actually passes — the expiry lives in advanceToNextTurn
-  // (spec §6). Victory checks are PR 8's seam at every TURN_ENDED.
+  // the turn actually passes — the expiry lives in concludeTurn (spec §6).
   if (draft.doublesCount > 0 && draft.doublesCount < 3) {
     draft.turnPhase = 'AWAITING_ROLL';
     events.push({ type: 'TURN_STARTED', payload: { playerId: player.id, turn: draft.turn } });
+    // §8 condition (b): the doubled cycle's TURN_ENDED still evaluates the
+    // net-worth victory check.
+    evaluateNetWorthTarget(draft, events);
     return events;
   }
-  events.push(...advanceToNextTurn(draft, player.id));
+  // Victory check + handover: the shared tail in ./endgame (spec §4, §8).
+  concludeTurn(draft, player.id, events);
   return events;
 }
 
-/** Rules PRs (8) add handlers here; the pipeline itself is closed. */
+/** The full Phase 1 handler registry. SELL_UPGRADE, MORTGAGE, BID, and
+ *  PASS_BID each dispatch by phase — the same command is legal in
+ *  TURN_MANAGEMENT (rows 9/11) and in debt settlement or a bank-creditor
+ *  estate sale (rows 13/15/16), with different rules per surface. */
 const HANDLERS: { [T in CommandType]?: CommandHandler } = {
   START_GAME: startGameHandler,
   SAVE_SNAPSHOT: saveSnapshotHandler,
@@ -401,13 +372,20 @@ const HANDLERS: { [T in CommandType]?: CommandHandler } = {
   HOLD: holdHandler,
   BUY: buyHandler,
   PASS_TO_AUCTION: passToAuctionHandler,
-  BID: bidHandler,
-  PASS_BID: passBidHandler,
+  BID: (draft, command) =>
+    draft.turnPhase === 'ELIMINATION_AUCTIONS' ? estateBidHandler(draft, command) : bidHandler(draft, command),
+  PASS_BID: (draft, command) =>
+    draft.turnPhase === 'ELIMINATION_AUCTIONS' ? estatePassBidHandler(draft, command) : passBidHandler(draft, command),
   SETTLE_DEBT: settleDebtHandler,
-  SELL_UPGRADE: sellUpgradeHandler,
-  MORTGAGE: mortgageHandler,
+  SELL_UPGRADE: (draft, command) =>
+    draft.turnPhase === 'TURN_MANAGEMENT' ? sellUpgradeManagementHandler(draft, command) : sellUpgradeHandler(draft, command),
+  MORTGAGE: (draft, command) =>
+    draft.turnPhase === 'TURN_MANAGEMENT' ? mortgageManagementHandler(draft, command) : mortgageHandler(draft, command),
+  BUILD: buildHandler,
+  UNMORTGAGE: unmortgageHandler,
   OFFER_TRADE: offerTradeHandler,
   ANSWER_TRADE: answerTradeHandler,
+  SURRENDER: surrenderHandler,
   END_TURN: endTurnHandler,
 };
 
@@ -459,6 +437,7 @@ export function createGame(input: CreateGameInput): CreateGameResult {
     debt: null,
     auction: null,
     trade: null,
+    estateSale: null,
     rulesVersion: RULES_VERSION,
     seed,
     rngState: seed >>> 0,
@@ -475,6 +454,7 @@ export function createGame(input: CreateGameInput): CreateGameResult {
     })),
     activePlayerId: null,
     turn: 0,
+    round: 0,
     lastEventSequence: 0,
     processedCommandIds: [],
   } as GameState;

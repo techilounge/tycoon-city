@@ -30,11 +30,10 @@ export const RULE_ERROR_CODES = [
   'INSUFFICIENT_RESOURCES',
   /** The command violates a rule constraint (pipeline step 8). */
   'RULE_VIOLATION',
-  /** The debt cannot be resolved even with maximum liquidation (spec §7). */
+  /** The debt cannot be resolved even with maximum liquidation (spec §7):
+   *  every command except SURRENDER is refused while the debt is hopeless;
+   *  SURRENDER runs the bankruptcy waterfall (PR 8). */
   'DEBT_HOPELESS',
-  /** Transitional guard (spec §17.2): PR 5 rejects hopeless debt atomically
-   *  instead of applying partial bankruptcy; the PR 8 waterfall replaces it. */
-  'DEBT_UNRESOLVABLE',
   /** A replay or load met an event log or snapshot produced under unsupported rules (spec §3). */
   'RULES_VERSION_UNSUPPORTED',
 ] as const;
