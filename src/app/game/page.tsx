@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Board } from '@/components/Board';
+import { PlayerRail } from '@/components/PlayerRail';
 import { MODES, MODE_IDS, type ModeId } from '@/lib/game/board-v1';
 import type { CommandType, GameCommand } from '@/lib/game/commands';
 import { LocalCommandSink } from '@/lib/game/engine/transport';
@@ -359,28 +360,7 @@ function GameScreen() {
               </section>
             )}
 
-            <section className="panel p-5" aria-label="Players">
-              <h2 className="text-lg font-bold">Players</h2>
-              <ul className="mt-3 flex flex-col gap-2">
-                {state.players.map((p) => (
-                  <li key={p.id} className="flex items-center justify-between gap-2 text-sm">
-                    <span className="flex items-center gap-2">
-                      <span
-                        aria-hidden
-                        className="inline-block h-3.5 w-3.5 rounded-full border border-white/70"
-                        style={{ background: PLAYER_COLORS[seatOf.get(p.id) ?? 0] }}
-                      />
-                      <span className={p.id === state.activePlayerId ? 'font-bold' : ''}>{p.id}</span>
-                      {p.id === state.activePlayerId && <span className="text-xs text-[#e3bd72]">active</span>}
-                      {p.skipNextTurn && <span className="text-xs text-slate-400">skips next turn</span>}
-                    </span>
-                    <span className="text-slate-300">
-                      ${p.cash.toLocaleString()} · {p.tokens.HOLD} hold
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </section>
+            <PlayerRail state={state} />
 
             <section className="panel p-5" aria-label="Game activity">
               <h2 className="text-lg font-bold">Activity</h2>
