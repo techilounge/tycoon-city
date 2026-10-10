@@ -6,7 +6,7 @@
  * per game and eventIds are composites of gameId and sequence, so replay
  * reproduces the log byte-for-byte.
  */
-import type { CreditorId, DebtReason, EventMeta, PlayerId, SpaceId, TokenKind, TradeOffer, TradeResponse } from './types';
+import type { AuctionOpenReason, CreditorId, DebtReason, EventMeta, PlayerId, SpaceId, TokenKind, TradeOffer, TradeResponse } from './types';
 import { BANK_ID, RULES_VERSION } from './types';
 import type { EventCardEffect } from './board-v1';
 import { RuleError } from './engine/errors';
@@ -21,7 +21,9 @@ export type { TokenKind };
 /** CreditorId is owned by ./types (base vocabulary); re-exported here so
  *  DEBT_* payload consumers keep one import site. */
 export type { CreditorId };
-export type AuctionOpenReason = 'DECLINED' | 'BANK_ESTATE';
+/** AuctionOpenReason is owned by ./types (base vocabulary); re-exported here
+ *  so AUCTION_OPENED payload consumers keep one import site. */
+export type { AuctionOpenReason };
 export type VictoryReason = 'LAST_SOLVENT' | 'NET_WORTH_TARGET' | 'ROUND_CAP';
 
 /**

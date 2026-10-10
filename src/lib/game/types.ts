@@ -87,6 +87,39 @@ export type TokenKind = 'HOLD' | 'RENT_HOLIDAY';
 
 export const TOKEN_KINDS: readonly TokenKind[] = ['HOLD', 'RENT_HOLIDAY'];
 
+/** Why an auction opened (spec §5): a declined buy in BUY_DECISION, or a
+ *  bank-creditor estate sale (PR 8's ELIMINATION_AUCTIONS, same rules).
+ *  Canonical declaration lives here (base vocabulary); events.ts re-exports. */
+export type AuctionOpenReason = 'DECLINED' | 'BANK_ESTATE';
+
+export const AUCTION_OPEN_REASONS: readonly AuctionOpenReason[] = ['DECLINED', 'BANK_ESTATE'];
+
+/**
+ * One open ascending auction (spec §5). At most one is open at a time;
+ * `auction` is non-null exactly when turnPhase is 'AUCTION' (tested
+ * invariant, mirroring debt). Bids are strictly cash-backed and ascend in
+ * $10 steps; passing is binding; the winner — the last unpassed bidder —
+ * pays the bank inside the command that resolves the auction, so no
+ * winner-debt scenario exists.
+ */
+export interface AuctionState {
+  /** Deterministic, replay-stable id derived from the opening event's sequence. */
+  readonly auctionId: string;
+  readonly spaceId: SpaceId;
+  readonly reason: AuctionOpenReason;
+  /** The standing high bid; null until the first bid. The winner always pays
+   *  their own bid — an auction never awards a price nobody bid (spec §5). */
+  readonly currentBid: number | null;
+  /** The holder of the standing bid; null together with currentBid. */
+  readonly highBidderId: PlayerId | null;
+  /** Players who have passed — binding for the whole auction, in pass order. */
+  readonly passedPlayerIds: readonly PlayerId[];
+  /** Eligibility frozen at open: every non-eliminated player, the decliner
+   *  included (Decision D-2). No payment can occur while an auction is open,
+   *  so the set cannot go stale in Phase 1 (spec §5). */
+  readonly eligiblePlayerIds: readonly PlayerId[];
+}
+
 /** Per-player state. */
 export interface PlayerState {
   readonly id: PlayerId;
@@ -140,6 +173,9 @@ export interface GameState {
   /** The open debt while SETTLING_DEBT; null otherwise. Non-null exactly when
    *  turnPhase is SETTLING_DEBT (tested invariant, spec §7). */
   readonly debt: DebtState | null;
+  /** The open auction while turnPhase is AUCTION; null otherwise. Non-null
+   *  exactly when turnPhase is 'AUCTION' (tested invariant, spec §5). */
+  readonly auction: AuctionState | null;
   readonly rulesVersion: number;
   readonly seed: number;
   /** Current Mulberry32 word — the engine's entire randomness state (spec §3). */

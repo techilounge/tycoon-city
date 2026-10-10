@@ -23,6 +23,7 @@ import { RuleError } from './errors';
 import { moveForward, nearestParkIndex } from './movement';
 import { resolveLanding } from './economy';
 import { isDebtHopeless, mortgageHandler, settleDebtHandler, sellUpgradeHandler } from './debt';
+import { bidHandler, passBidHandler, passToAuctionHandler, requireAuctionableLandedSpace } from './auctions';
 import type { GameStateDraft, DraftPlayer } from './draft';
 import { requirePlayer } from './draft';
 
@@ -156,11 +157,11 @@ export function applyCommand(state: GameState, command: GameCommand, rng: Random
 /**
  * Pure authorization predicate (spec §10) — shipped now and reused verbatim
  * by the Phase 2 server. PR 2 covers the machinery commands; the remaining
- * actor classes join as their rules land: eligible auction bidders (PR 6),
- * designated trade recipients (PR 7), and debt-settlement actors (PR 5's
- * settlement commands run in SETTLING_DEBT, where the debtor IS the active
- * player, so the active-player default already covers them). PR 8 adds the
- * elimination-auction and estate cases.
+ * actor classes join as their rules land: designated trade recipients (PR 7)
+ * and PR 8's elimination-auction and estate cases. Auction bidders are
+ * authorized here since PR 6 (spec §5); debt-settlement commands run in
+ * SETTLING_DEBT, where the debtor IS the active player, so the active-player
+ * default already covers them.
  */
 export function canAct(state: GameState, command: GameCommand): boolean {
   const actor = state.players.find((player) => player.id === command.actorId);
@@ -170,6 +171,15 @@ export function canAct(state: GameState, command: GameCommand): boolean {
     case 'SAVE_SNAPSHOT':
       // Hot-seat device actions: any live player at the controls.
       return true;
+    case 'BID':
+    case 'PASS_BID': {
+      // Eligible auction bidder (spec §5): any live player who has not
+      // passed — the decliner included (Decision D-2). With no open auction
+      // nobody is a bidder, so authorization fails at step 5, before the
+      // phase check could name INVALID_PHASE (pipeline order, spec §2.1).
+      const auction = state.auction;
+      return auction !== null && !auction.passedPlayerIds.includes(command.actorId);
+    }
     default:
       // Turn-scoped commands default to the active player (spec §10).
       return state.activePlayerId === command.actorId;
@@ -317,13 +327,9 @@ function buyHandler(draft: GameStateDraft, command: GameCommand): readonly AnyEv
     throw new RuleError('INVALID_PHASE', `BUY is only valid in BUY_DECISION, not ${String(draft.turnPhase)}`, { phase: draft.turnPhase });
   }
   const player = requirePlayer(draft, command.actorId);
-  const landed = BOARD_SPACES[player.position];
-  if (!isPurchasable(landed)) {
-    throw new RuleError('RULE_VIOLATION', `space ${landed.id} is not purchasable`, { spaceId: landed.id, kind: landed.kind });
-  }
-  if (landed.id in draft.owners) {
-    throw new RuleError('RULE_VIOLATION', `space ${landed.id} is already owned`, { spaceId: landed.id, ownerId: draft.owners[landed.id] });
-  }
+  // Purchasable and unowned — the same precondition a decline's auction
+  // needs; one shared guard keeps BUY and PASS_TO_AUCTION consistent.
+  const landed = requireAuctionableLandedSpace(draft, player.id);
   // The registry correlates type and payload; TS cannot carry that through
   // the handler union — same documented cast as stampEvents.
   const requested = (command.payload as { readonly spaceId?: string }).spaceId;
@@ -341,20 +347,11 @@ function buyHandler(draft: GameStateDraft, command: GameCommand): readonly AnyEv
 }
 
 /**
- * Row 6 (TRANSITIONAL — replaced by PR 6): the AUCTION phase and its BID /
- * PASS_BID commands are PR 6 (spec §12 rows 6–8). Declining in PR 4 parks
- * the space with the bank, unowned, and the turn proceeds. Zero events is
- * the honest log — no money or ownership changed. PR 6 replaces this
- * handler's tail with AUCTION_OPENED + the AUCTION phase, mirroring the
- * §17.2 replacement-seam pattern.
+ * Row 6 and the AUCTION rows 7–8 (PASS_TO_AUCTION, BID, PASS_BID) live in
+ * ./auctions — the PR 4 transitional decline was replaced there (§17.2
+ * replacement-seam pattern), mirroring how PR 6's handlers replaced the
+ * park-and-proceed behavior.
  */
-function passToAuctionHandler(draft: GameStateDraft): readonly AnyEventInput[] {
-  if (draft.turnPhase !== 'BUY_DECISION') {
-    throw new RuleError('INVALID_PHASE', `PASS_TO_AUCTION is only valid in BUY_DECISION, not ${String(draft.turnPhase)}`, { phase: draft.turnPhase });
-  }
-  draft.turnPhase = 'TURN_MANAGEMENT';
-  return [];
-}
 
 /** Row 12: end the turn — doubles grant exactly one extra cycle, else hand over. */
 function endTurnHandler(draft: GameStateDraft, command: GameCommand): readonly AnyEventInput[] {
@@ -377,7 +374,7 @@ function endTurnHandler(draft: GameStateDraft, command: GameCommand): readonly A
   return events;
 }
 
-/** Rules PRs (5–8) add handlers here; the pipeline itself is closed. */
+/** Rules PRs (7–8) add handlers here; the pipeline itself is closed. */
 const HANDLERS: { [T in CommandType]?: CommandHandler } = {
   START_GAME: startGameHandler,
   SAVE_SNAPSHOT: saveSnapshotHandler,
@@ -385,6 +382,8 @@ const HANDLERS: { [T in CommandType]?: CommandHandler } = {
   HOLD: holdHandler,
   BUY: buyHandler,
   PASS_TO_AUCTION: passToAuctionHandler,
+  BID: bidHandler,
+  PASS_BID: passBidHandler,
   SETTLE_DEBT: settleDebtHandler,
   SELL_UPGRADE: sellUpgradeHandler,
   MORTGAGE: mortgageHandler,
@@ -437,6 +436,7 @@ export function createGame(input: CreateGameInput): CreateGameResult {
     mortgaged: {},
     eventDeck: { drawPile: [], discardPile: [] },
     debt: null,
+    auction: null,
     rulesVersion: RULES_VERSION,
     seed,
     rngState: seed >>> 0,
