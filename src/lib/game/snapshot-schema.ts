@@ -237,6 +237,37 @@ export function validateGameStateShape(state: unknown): boolean {
     return false;
   }
 
+  // A pending trade (spec §6) is valid in ANY phase — answers are legal
+  // while an offer pends and counters survive turn boundaries — so unlike
+  // debt and auction there is no turnPhase tie. anchorTurn is null exactly
+  // while a counter-proposer's anchoring turn has not begun (spec §6).
+  if (s.trade !== null) {
+    if (typeof s.trade !== 'object') return false;
+    const trade = s.trade as Record<string, unknown>;
+    if (typeof trade.tradeId !== 'string' || trade.tradeId.length === 0) return false;
+    if (typeof trade.proposerId !== 'string' || trade.proposerId.length === 0 || !seenIds.has(trade.proposerId)) return false;
+    if (typeof trade.recipientId !== 'string' || trade.recipientId.length === 0 || !seenIds.has(trade.recipientId)) return false;
+    if (trade.proposerId === trade.recipientId) return false;
+    if (
+      trade.anchorTurn !== null &&
+      (typeof trade.anchorTurn !== 'number' || !Number.isInteger(trade.anchorTurn) || (trade.anchorTurn as number) < 0)
+    ) {
+      return false;
+    }
+    if (typeof trade.offer !== 'object' || trade.offer === null) return false;
+    const offer = trade.offer as Record<string, unknown>;
+    for (const leg of ['give', 'receive'] as const) {
+      const side = offer[leg];
+      if (typeof side !== 'object' || side === null) return false;
+      const legRecord = side as Record<string, unknown>;
+      if (typeof legRecord.cash !== 'number' || !Number.isInteger(legRecord.cash) || (legRecord.cash as number) < 0) return false;
+      if (!Array.isArray(legRecord.spaceIds)) return false;
+      for (const spaceId of legRecord.spaceIds as unknown[]) {
+        if (typeof spaceId !== 'string' || spaceId.length === 0) return false;
+      }
+    }
+  }
+
   if (!Array.isArray(s.processedCommandIds)) return false;
   const seenCommandIds = new Set<string>();
   for (const id of s.processedCommandIds) {

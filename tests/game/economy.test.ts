@@ -91,6 +91,7 @@ function craftedState(overrides: {
     eventDeck: overrides.eventDeck ?? { drawPile: [], discardPile: [] },
     debt: overrides.debt ?? null,
     auction: null,
+    trade: null,
     rulesVersion: RULES_VERSION,
     seed: 1,
     rngState: overrides.rngState ?? 1,

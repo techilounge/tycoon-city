@@ -121,6 +121,7 @@ function craftedState(overrides: {
   rngState?: number;
   owners?: Record<string, PlayerId>;
   auction?: GameState['auction'];
+  trade?: GameState['trade'];
   lastEventSequence?: number;
 } = {}): GameState {
   return {
@@ -136,6 +137,7 @@ function craftedState(overrides: {
     eventDeck: { drawPile: [], discardPile: [] },
     debt: null,
     auction: overrides.auction ?? null,
+    trade: overrides.trade ?? null,
     rulesVersion: RULES_VERSION,
     seed: 1,
     rngState: overrides.rngState ?? 1,

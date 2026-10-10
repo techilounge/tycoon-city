@@ -176,6 +176,10 @@ export interface GameState {
   /** The open auction while turnPhase is AUCTION; null otherwise. Non-null
    *  exactly when turnPhase is 'AUCTION' (tested invariant, spec §5). */
   readonly auction: AuctionState | null;
+  /** The one pending trade offer (spec §6); null while no offer awaits an
+   *  answer. Deliberately NOT tied to a turnPhase: answers are legal in any
+   *  phase while pending, and counters survive turn boundaries (spec §6). */
+  readonly trade: PendingTradeState | null;
   readonly rulesVersion: number;
   readonly seed: number;
   /** Current Mulberry32 word — the engine's entire randomness state (spec §3). */
@@ -208,6 +212,33 @@ export interface TradeOffer {
 
 /** How the recipient answered a trade offer (spec §6). */
 export type TradeResponse = 'ACCEPT' | 'REJECT' | 'COUNTER';
+
+/**
+ * The one pending trade offer (spec §6). At most one is pending at a time;
+ * `trade` is non-null exactly while an offer awaits its recipient's answer
+ * — unlike debt and auction there is no turnPhase tie, because an answer is
+ * legal in any phase while the offer is pending (spec §4 row 10) and a
+ * counter survives turn boundaries until the NEW proposer's own turn ends.
+ *
+ * Expiry is wall-clock-free (spec §6): the offer records the turn ordinal
+ * whose end kills it, and the turn-pass path compares that counter against
+ * state.turn. A fresh offer is anchored at creation to the proposer's
+ * current turn (they are the active player). A counter anchors to the new
+ * proposer's NEXT turn, whose ordinal cannot be known at creation (skipped
+ * seats consume ordinals), so a counter is stored with anchorTurn null and
+ * resolved when that TURN_STARTED is stamped.
+ */
+export interface PendingTradeState {
+  /** Deterministic, replay-stable id derived from the offer's TRADE_OFFERED sequence. */
+  readonly tradeId: string;
+  readonly proposerId: PlayerId;
+  readonly recipientId: PlayerId;
+  /** The atomic swap on the table: proposer gives `give`, receives `receive`. */
+  readonly offer: TradeOffer;
+  /** The turn ordinal whose end expires this offer; null until the
+   *  counter-proposer's anchoring turn begins (spec §6). */
+  readonly anchorTurn: number | null;
+}
 
 /** Deterministic event metadata: draw RESULTS only, never raw PRNG words (spec §2.2, §3). */
 export interface EventMeta {

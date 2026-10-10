@@ -146,9 +146,10 @@ test('reducer: unimplemented rules commands are rejected COMMAND_NOT_IMPLEMENTED
     // PR 4 implemented ROLL, HOLD, BUY, PASS_TO_AUCTION, and END_TURN; PR 5
     // added SETTLE_DEBT plus the settling-phase liquidation commands
     // SELL_UPGRADE and MORTGAGE; PR 6 added the auction commands BID and
-    // PASS_BID. The remaining rules commands land with PRs 7–8 and must
-    // still refuse to run.
-    for (const type of ['BUILD', 'UNMORTGAGE', 'OFFER_TRADE', 'ANSWER_TRADE', 'SURRENDER'] as const) {
+    // PASS_BID; PR 7 added the trade commands OFFER_TRADE and ANSWER_TRADE.
+    // The remaining rules commands land with PR 8 and must still refuse to
+    // run.
+    for (const type of ['BUILD', 'UNMORTGAGE', 'SURRENDER'] as const) {
       const result = applyCommand(started.state, makeCommand(type, { expectedVersion: started.state.version, commandId: commandId() }), rngForState(started.state.rngState));
       assert.equal(result.ok, false, `${type} must not apply in this rules build`);
       if (result.ok === false) assert.equal(result.error.code, 'COMMAND_NOT_IMPLEMENTED');

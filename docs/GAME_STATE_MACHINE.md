@@ -52,9 +52,20 @@ Implemented in the slice (spec §4 rows 1–6 and 12):
 | 4 | `RESOLVING_MOVE` | *(automatic — third doubles)* | doubles counter reached 3 | **no dice movement**; token relocates to the nearest park (no bonus); skip-next-turn marked; counter resets | `TURN_ENDED` → next player's `AWAITING_ROLL` |
 | 5 | `BUY_DECISION` | `BUY` | cash ≥ list price | `PROPERTY_PURCHASED` (via `DIRECT`), full-price payment to the bank | `TURN_MANAGEMENT` |
 | 6 | `BUY_DECISION` | `PASS_TO_AUCTION` | — | transitional decline in the slice — the auction itself opens with PR 6 (spec §5) | `TURN_MANAGEMENT` |
-| 12 | `TURN_MANAGEMENT` | `END_TURN` | — | victory check seam (PR 8); **doubles grant one extra cycle** | same player's `AWAITING_ROLL` (doubles) · next player's `AWAITING_ROLL` · `GAME_OVER` (PR 8) |
+| 12 | `TURN_MANAGEMENT` | `END_TURN` | — | pending-offer expiry runs on the turn pass (spec §6); victory check seam (PR 8); **doubles grant one extra cycle** | same player's `AWAITING_ROLL` (doubles) · next player's `AWAITING_ROLL` · `GAME_OVER` (PR 8) |
+| 10 | `TURN_MANAGEMENT` | `OFFER_TRADE` / `ANSWER_TRADE` (as recipient, any phase while pending) | active player proposes; only the designated recipient answers (spec §6) | `TRADE_OFFERED` / `TRADE_ANSWERED` (accept is atomic; counter reverses roles and replaces the offer) | `TURN_MANAGEMENT` |
+| 13 | `SETTLING_DEBT` | `OFFER_TRADE` / `ANSWER_TRADE` | debtor (proposals) + recipient (answers) — Decision D-6 | raises cash toward the due amount by consent | `SETTLING_DEBT` until `SETTLE_DEBT` settles |
 
-Rows 7–11 and 13–17 (auctions, trading, debt, surrender, elimination auctions, system transitions) land with PRs 5–8 and will be appended here as they are implemented.
+Rows 7–9, 11, 14–17 (auction decisions, surrender, non-trade debt rows, elimination auctions, system transitions) land with PRs 6–8 and will be appended here as they are implemented; rows 10 and 13 (trading, spec §6) landed with PR 7.
+
+## Trades (spec §6, PR 7)
+
+- **One pending offer at a time.** `state.trade` holds the single offer awaiting its recipient's answer; a proposal while one pends is rejected.
+- **Initiation:** the active player, in `TURN_MANAGEMENT` — or in `SETTLING_DEBT`, where the debtor proposes and answers trades by consent (Decision D-6).
+- **Answers:** only the designated recipient, in **any phase while pending** — answering never disturbs the active player's turn.
+- **Counter:** reverses proposer/recipient and replaces the pending offer under a fresh id; it is anchored to the new proposer's NEXT turn (its ordinal is stamped when that `TURN_STARTED` fires).
+- **Expiry — no wall clock:** an offer stores the turn ordinal whose end kills it; the shared turn-pass path (`advanceToNextTurn`, rows 2/4/12) compares that counter against `state.turn` and emits `TRADE_EXPIRED`. A doubles extra cycle is the same ordinal — an offer survives it.
+- **Acceptance is atomic:** both sides are re-validated against current state (ownership of every named space, cash capacity, solvency), then cash and ownership move in one all-or-nothing transition — no credit, cash ≥ 0 both sides after transfer. Mortgaged spaces and built levels ride with the space; the transferee pays the 110% unlock later (spec §6, §8).
 
 ## Exact semantics pinned by tests
 
@@ -74,7 +85,11 @@ Rows 7–11 and 13–17 (auctions, trading, debt, surrender, elimination auction
 | `HOLD` | `AWAITING_ROLL` | row 2 |
 | `BUY` | `BUY_DECISION` | row 5 |
 | `PASS_TO_AUCTION` | `BUY_DECISION` | row 6 (transitional; real auctions in PR 6) |
+| `SETTLE_DEBT` | `SETTLING_DEBT` | row 14 (PR 5) |
+| `SELL_UPGRADE` / `MORTGAGE` | `SETTLING_DEBT` | debtor liquidation rows (PR 5) |
+| `OFFER_TRADE` | `TURN_MANAGEMENT`, `SETTLING_DEBT` | rows 10 and 13 (PR 7) |
+| `ANSWER_TRADE` | any phase while an offer is pending | row 10 (PR 7) |
 | `END_TURN` | `TURN_MANAGEMENT` | row 12 |
 | `SAVE_SNAPSHOT` | any phase | snapshot persistence seam (PR 2) |
 
-All other Phase 1 commands (`BUILD`, `MORTGAGE`, `OFFER_TRADE`, `SETTLE_DEBT`, `SURRENDER`, …) still reject with `COMMAND_NOT_IMPLEMENTED` until their PRs land.
+All other Phase 1 commands (`BUILD`, `UNMORTGAGE`, `SURRENDER`) still reject with `COMMAND_NOT_IMPLEMENTED` until PR 8 lands.
