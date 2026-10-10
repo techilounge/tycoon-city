@@ -15,8 +15,11 @@ import type { ModeId } from './board-v1';
 /** Rules version in effect for this engine build (spec §8). */
 export const RULES_VERSION = 1;
 
-/** Snapshot format version — independent of RULES_VERSION (spec §2.4). */
-export const SNAPSHOT_SCHEMA_VERSION = 1;
+/** Snapshot format version — independent of RULES_VERSION (spec §2.4).
+ *  v2: adds round tracking, the ELIMINATION_AUCTIONS estate-sale queue, and
+ *  the auction-reason/turn-phase cross-invariants (PR 8 endgame). v1
+ *  snapshots refuse cleanly with UNKNOWN_SCHEMA_VERSION (spec §11). */
+export const SNAPSHOT_SCHEMA_VERSION = 2;
 
 /** Player-count bounds for Phase 1 (spec §1: 2–6 players). */
 export const MIN_PLAYERS = 2;
@@ -96,11 +99,12 @@ export const AUCTION_OPEN_REASONS: readonly AuctionOpenReason[] = ['DECLINED', '
 
 /**
  * One open ascending auction (spec §5). At most one is open at a time;
- * `auction` is non-null exactly when turnPhase is 'AUCTION' (tested
- * invariant, mirroring debt). Bids are strictly cash-backed and ascend in
- * $10 steps; passing is binding; the winner — the last unpassed bidder —
- * pays the bank inside the command that resolves the auction, so no
- * winner-debt scenario exists.
+ * `auction` is non-null exactly when turnPhase is 'AUCTION' (a declined
+ * buy) or 'ELIMINATION_AUCTIONS' (a bank-creditor estate sale, PR 8) —
+ * tested invariants, mirroring debt. Bids are strictly cash-backed and
+ * ascend in $10 steps; passing is binding; the winner — the last unpassed
+ * bidder — pays the bank inside the command that resolves the auction, so
+ * no winner-debt scenario exists.
  */
 export interface AuctionState {
   /** Deterministic, replay-stable id derived from the opening event's sequence. */
@@ -118,6 +122,23 @@ export interface AuctionState {
    *  included (Decision D-2). No payment can occur while an auction is open,
    *  so the set cannot go stale in Phase 1 (spec §5). */
   readonly eligiblePlayerIds: readonly PlayerId[];
+}
+
+/**
+ * A bank-creditor estate awaiting sequential per-property sale (spec §5, §7
+ * step 5; PR 8). Non-null exactly when turnPhase is 'ELIMINATION_AUCTIONS',
+ * during which an auction with reason 'BANK_ESTATE' is always open (the
+ * waterfall opens the first; each resolution opens the next or ends the
+ * phase) — tested invariants. The debtor is already eliminated when the
+ * sale runs; their properties left `owners` at the waterfall, so unsold
+ * spaces are simply unowned — returned to the bank (spec §5).
+ */
+export interface EstateSaleState {
+  /** The bankrupt player whose estate is being liquidated. */
+  readonly debtorId: PlayerId;
+  /** Estate spaces not yet opened for auction, in board order — the
+   *  deterministic sale sequence (spec §7 step 5). */
+  readonly pendingSpaceIds: readonly SpaceId[];
 }
 
 /** Per-player state. */
@@ -180,6 +201,9 @@ export interface GameState {
    *  answer. Deliberately NOT tied to a turnPhase: answers are legal in any
    *  phase while pending, and counters survive turn boundaries (spec §6). */
   readonly trade: PendingTradeState | null;
+  /** The bank-creditor estate being liquidated while turnPhase is
+   *  ELIMINATION_AUCTIONS; null otherwise (spec §5, §7 step 5). */
+  readonly estateSale: EstateSaleState | null;
   readonly rulesVersion: number;
   readonly seed: number;
   /** Current Mulberry32 word — the engine's entire randomness state (spec §3). */
@@ -192,6 +216,13 @@ export interface GameState {
    *  ordinal, spec §4) — but NOT across a doubles extra cycle, which shares
    *  its turn's ordinal (spec §4 row 12). */
   readonly turn: number;
+  /** Ordinal of the current round (spec §4, §8): 1-based during PLAYING, 0 in
+   *  LOBBY. A round is one pass through the LIVE seats — eliminated players
+   *  are out of turn order (spec §7), so a round is the span in which every
+   *  live seat gets exactly one turn attempt. Increments when a turn
+   *  handover wraps the seat order; the round-cap victory compares it
+   *  against the mode's roundCap (spec §8). */
+  readonly round: number;
   /** Highest event sequence stamped so far; keeps sequences gapless across the fold (spec §2.2). */
   readonly lastEventSequence: number;
   /** Idempotency ledger — every commandId applied to this state (spec §2.1 step 4, §2.4). */

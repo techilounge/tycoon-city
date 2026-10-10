@@ -3,33 +3,34 @@
  *
  * PR 5 scope is settleable debts only: unilateral liquidation
  * (SELL_UPGRADE, MORTGAGE), one atomic SETTLE_DEBT payment, and — when cash
- * plus maximum liquidation still cannot cover the due amount — a typed
- * DEBT_UNRESOLVABLE rejection that changes nothing, leaving the game paused
- * in SETTLING_DEBT. SURRENDER, the bankruptcy waterfall, asset transfers,
- * and elimination auctions are PR 8 scope: this build is structurally
- * unable to emit PLAYER_BANKRUPT, ASSETS_TRANSFERRED, or PLAYER_ELIMINATED
- * (the SettlementEventInput union below simply has no such member, and no
- * handler here could construct one), and PR 8 replaces this rejection seam
- * with the real waterfall.
+ * plus maximum liquidation still cannot cover the due amount — the
+ * DEBT_HOPELESS veto that admits only SURRENDER. PR 8's waterfall (./endgame)
+ * owns SURRENDER and the full bankruptcy process; the liquidation cores
+ * here are shared with the TURN_MANAGEMENT variants in ./development, and
+ * the handlers below remain structurally unable to emit PLAYER_BANKRUPT,
+ * ASSETS_TRANSFERRED, or PLAYER_ELIMINATED (the SettlementEventInput union
+ * has no such member).
  *
  * Hopeless detection is pure state arithmetic — no timers: the engine
  * computes max recoverable = cash + Σ liquidation values and compares it to
  * the due amount (spec §7).
  */
-import { BOARD_SPACES, isPurchasable, type PurchasableSpace } from '../board-v1';
+import { BOARD_SPACES, isPurchasable } from '../board-v1';
 import type { GameCommand } from '../commands';
 import type { EventInput } from '../events';
-import { mortgageProceeds, upgradeCost, upgradeSellBackProceeds } from '../rules-v1';
-import type { DebtState, GameState, PlayerId, SpaceId } from '../types';
+import type { DebtState, GameState, PlayerId } from '../types';
 import { BANK_ID } from '../types';
+import { mortgageProceeds, upgradeCost, upgradeSellBackProceeds } from '../rules-v1';
 import { RuleError } from './errors';
 import type { GameStateDraft } from './draft';
 import { requirePlayer } from './draft';
+import { mortgageCore, sellUpgradeCore, spaceIdPayload } from './development';
 
-/** The event vocabulary of the transitional settlement surface. PR 8's
- *  waterfall widens this union with PLAYER_BANKRUPT, ASSETS_TRANSFERRED,
- *  and PLAYER_ELIMINATED when it replaces the rejection seam — until then
- *  the type system itself blocks those events from every handler here. */
+/** The event vocabulary of the settlement commands (spec §4 row 13).
+ *  Deliberately narrow — no bankruptcy member exists, so no settlement
+ *  command can emit PLAYER_BANKRUPT, ASSETS_TRANSFERRED, or
+ *  PLAYER_ELIMINATED; §17.2's negative tests pin this at type level. The
+ *  waterfall's bankruptcy vocabulary lives in ./endgame. */
 export type SettlementEventInput =
   | EventInput<'DEBT_SETTLED'>
   | EventInput<'UPGRADE_SOLD'>
@@ -67,23 +68,6 @@ export function isDebtHopeless(state: GameState, debt: DebtState): boolean {
   const debtor = state.players.find((player) => player.id === debt.debtorId);
   if (!debtor) throw new Error(`engine bug: debtor ${debt.debtorId} not found`);
   return debtor.cash + maxLiquidationValue(state, debt.debtorId) < debt.amountDue;
-}
-
-/** The owned purchasable space a liquidation command names, after the
- *  ownership rule has been checked. A miss is an engine bug (the caller
- *  verified ownership), not a rule outcome. */
-function requireOwnedSpace(draft: GameStateDraft, playerId: PlayerId, spaceId: string): PurchasableSpace {
-  const space = BOARD_SPACES.find((candidate) => candidate.id === spaceId);
-  if (!space || !isPurchasable(space)) {
-    throw new RuleError('RULE_VIOLATION', `space ${spaceId} is not a purchasable space`, { spaceId });
-  }
-  if (draft.owners[spaceId] !== playerId) {
-    throw new RuleError('RULE_VIOLATION', `space ${spaceId} is not owned by player ${playerId}`, {
-      spaceId,
-      ownerId: draft.owners[spaceId] ?? null,
-    });
-  }
-  return space;
 }
 
 /** The open debt on the draft after the phase check has proven one exists. */
@@ -124,13 +108,6 @@ export function settleDebtHandler(draft: GameStateDraft, command: GameCommand): 
   return [{ type: 'DEBT_SETTLED', payload: { debtorId: debt.debtorId, creditorId: debt.creditorId, amount: debt.amountDue } }];
 }
 
-/** The registry correlates type and payload; TS cannot carry that through
- *  the handler union — same documented cast as the reducer's buyHandler.
- *  Shape validation already ran (pipeline step 1). */
-function spaceIdPayload(command: GameCommand): SpaceId {
-  return (command.payload as { readonly spaceId: SpaceId }).spaceId;
-}
-
 /** The debtor's liquidation commands act on the open debt only — every other
  *  actor is refused even though hot-seat authorization already narrows to
  *  the active player (who is the debtor in Phase 1). */
@@ -145,45 +122,24 @@ function requireDebtor(draft: GameStateDraft, command: GameCommand): void {
 }
 
 /**
- * Row 13 (transitional): the debtor sells one built level back to the bank
- * for 50% of the price originally paid for a level (spec §7, §8). Cash
- * rises toward the due amount; the turn stays in SETTLING_DEBT — settlement
- * itself remains the explicit SETTLE_DEBT command. UPGRADE_SOLD carries the
- * resulting level after the sale.
+ * Row 13: the debtor sells one built level back to the bank for 50% of the
+ * price originally paid for a level (spec §7, §8) — the debtor-scoped
+ * settlement variant of ./development's sellUpgradeCore. Cash rises toward
+ * the due amount; the turn stays in SETTLING_DEBT — settlement itself
+ * remains the explicit SETTLE_DEBT command.
  */
 export function sellUpgradeHandler(draft: GameStateDraft, command: GameCommand): SettlementEventInput[] {
   requireDebtor(draft, command);
-  const spaceId = spaceIdPayload(command);
-  const space = requireOwnedSpace(draft, command.actorId, spaceId);
-  const level = draft.upgrades[spaceId] ?? 0;
-  if (level < 1) {
-    throw new RuleError('RULE_VIOLATION', `${spaceId} has no built levels to sell`, { spaceId, level });
-  }
-  const proceeds = upgradeSellBackProceeds(upgradeCost(space.listPrice));
-  draft.upgrades = { ...draft.upgrades, [spaceId]: level - 1 };
-  requirePlayer(draft, command.actorId).cash += proceeds;
-  return [{ type: 'UPGRADE_SOLD', payload: { playerId: command.actorId, spaceId, level: level - 1, proceeds } }];
+  return [sellUpgradeCore(draft, command.actorId, spaceIdPayload(command))];
 }
 
 /**
- * Row 13 (transitional): the debtor mortgages a level-0 space for 50% of
- * its list price (spec §7, §8). The mortgaged flag is ordinary state — the
- * 110% unlock cost is PR 8's UNMORTGAGE in TURN_MANAGEMENT; nothing here
- * lifts a mortgage because the settling debtor only ever raises cash.
+ * Row 13: the debtor mortgages a level-0 space for 50% of its list price
+ * (spec §7, §8) — the debtor-scoped settlement variant of ./development's
+ * mortgageCore. Nothing here lifts a mortgage: the settling debtor only
+ * ever raises cash; the 110% unlock is UNMORTGAGE in TURN_MANAGEMENT.
  */
 export function mortgageHandler(draft: GameStateDraft, command: GameCommand): SettlementEventInput[] {
   requireDebtor(draft, command);
-  const spaceId = spaceIdPayload(command);
-  const space = requireOwnedSpace(draft, command.actorId, spaceId);
-  const level = draft.upgrades[spaceId] ?? 0;
-  if (level > 0) {
-    throw new RuleError('RULE_VIOLATION', `${spaceId} must be level 0 to mortgage — sell the built levels first`, { spaceId, level });
-  }
-  if (draft.mortgaged[spaceId]) {
-    throw new RuleError('RULE_VIOLATION', `${spaceId} is already mortgaged`, { spaceId });
-  }
-  const proceeds = mortgageProceeds(space.listPrice);
-  draft.mortgaged = { ...draft.mortgaged, [spaceId]: true };
-  requirePlayer(draft, command.actorId).cash += proceeds;
-  return [{ type: 'MORTGAGE_TAKEN', payload: { playerId: command.actorId, spaceId, proceeds } }];
+  return [mortgageCore(draft, command.actorId, spaceIdPayload(command))];
 }

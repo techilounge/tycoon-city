@@ -142,6 +142,8 @@ export function validateGameStateShape(state: unknown): boolean {
   if (!isUint32(s.seed)) return false;
   if (!isUint32(s.rngState)) return false;
   if (typeof s.turn !== 'number' || !Number.isInteger(s.turn) || s.turn < 0) return false;
+  // round 0 is the lobby (no round has begun); START_GAME sets round 1.
+  if (typeof s.round !== 'number' || !Number.isInteger(s.round) || s.round < 0) return false;
   if (typeof s.lastEventSequence !== 'number' || !Number.isInteger(s.lastEventSequence) || s.lastEventSequence < 0) return false;
 
   // Turn-machine state (PR 4): mode, doubles counter, ownership.
@@ -231,9 +233,29 @@ export function validateGameStateShape(state: unknown): boolean {
       if (typeof id !== 'string' || !eligible.has(id) || passed.has(id)) return false;
       passed.add(id);
     }
-    if (s.turnPhase !== 'AUCTION') return false;
+    // The phase ties to the auction's reason (spec §4): a declined-purchase
+    // auction lives in AUCTION; a bank-creditor estate auction lives in
+    // ELIMINATION_AUCTIONS (PR 8).
+    const expectedAuctionPhase = auction.reason === 'BANK_ESTATE' ? 'ELIMINATION_AUCTIONS' : 'AUCTION';
+    if (s.turnPhase !== expectedAuctionPhase) return false;
   } else if (s.turnPhase === 'AUCTION') {
     // The converse: an AUCTION phase with no open auction is malformed (spec §5).
+    return false;
+  }
+
+  // An open bank-creditor estate sale is exactly an ELIMINATION_AUCTIONS
+  // turn phase (spec §4 row 16, §7 step 5 — PR 8).
+  if (s.estateSale !== null) {
+    if (typeof s.estateSale !== 'object') return false;
+    const estate = s.estateSale as Record<string, unknown>;
+    if (typeof estate.debtorId !== 'string' || estate.debtorId.length === 0 || !seenIds.has(estate.debtorId)) return false;
+    if (!Array.isArray(estate.pendingSpaceIds)) return false;
+    for (const spaceId of estate.pendingSpaceIds as unknown[]) {
+      if (typeof spaceId !== 'string' || spaceId.length === 0) return false;
+    }
+    if (s.turnPhase !== 'ELIMINATION_AUCTIONS') return false;
+  } else if (s.turnPhase === 'ELIMINATION_AUCTIONS') {
+    // The converse: the phase with no open estate is malformed (spec §4 row 16).
     return false;
   }
 

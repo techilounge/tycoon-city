@@ -334,3 +334,17 @@ export function resolveAnchorAtTurnStart(draft: GameStateDraft, playerId: Player
     draft.trade = { ...pending, anchorTurn: turn };
   }
 }
+
+/**
+ * Offers die with any involved party's elimination or bankruptcy (spec §6
+ * cancellation, §7 step 7) — called by the bankruptcy waterfall in
+ * ./endgame. Pure state write: the pending offer, if it names the eliminated
+ * player as proposer or recipient, is dropped with TRADE_CANCELLED.
+ */
+export function cancelTradeInvolving(draft: GameStateDraft, playerId: PlayerId, events: AnyEventInput[]): void {
+  const pending = draft.trade;
+  if (pending !== null && (pending.proposerId === playerId || pending.recipientId === playerId)) {
+    draft.trade = null;
+    events.push({ type: 'TRADE_CANCELLED', payload: { tradeId: pending.tradeId, reason: 'PARTY_INELIGIBLE' } });
+  }
+}
