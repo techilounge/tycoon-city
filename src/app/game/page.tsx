@@ -3,13 +3,15 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { ActionDock } from '@/components/ActionDock';
 import { Board } from '@/components/Board';
 import { PlayerRail } from '@/components/PlayerRail';
+import { TurnIndicator } from '@/components/TurnIndicator';
 import { MODES, MODE_IDS, type ModeId } from '@/lib/game/board-v1';
 import type { CommandType, GameCommand } from '@/lib/game/commands';
 import { LocalCommandSink } from '@/lib/game/engine/transport';
 import type { AnyGameEvent } from '@/lib/game/events';
-import { PLAYER_COLORS, buyOffer, currentTurnDice, describeEvent } from '@/lib/game/ui/uiPlayer';
+import { currentTurnDice, describeEvent } from '@/lib/game/ui/uiPlayer';
 import type { GameState } from '@/lib/game/types';
 
 /**
@@ -223,26 +225,12 @@ function GameScreen() {
   }
 
   const activePlayer = state.players.find((p) => p.id === state.activePlayerId);
-  const offer = buyOffer(state);
-  const seatOf = new Map(state.players.map((p, i) => [p.id, i]));
+  const activeSeat = activePlayer ? activePlayer.seat : 0;
   const logLines = history
     .map(describeEvent)
     .filter((line): line is string => line !== null)
     .slice(-HISTORY_WINDOW)
     .reverse();
-
-  const phaseHint = (() => {
-    switch (state.turnPhase) {
-      case 'AWAITING_ROLL':
-        return 'Roll the dice to move, or spend a Hold token to skip the turn.';
-      case 'BUY_DECISION':
-        return offer ? `You landed on ${offer.name}. Buy it at list price, or decline.` : 'Decide whether to buy.';
-      case 'TURN_MANAGEMENT':
-        return 'Turn management: building, mortgaging, and trading arrive in later updates. End your turn.';
-      default:
-        return state.phase === 'LOBBY' ? 'Start the game when everyone is ready.' : 'The game is over.';
-    }
-  })();
 
   return (
     <main className="mx-auto min-h-screen max-w-6xl px-4 py-6 sm:px-5 sm:py-8">
@@ -283,71 +271,10 @@ function GameScreen() {
 
           <aside className="flex flex-col gap-4">
             {revealed ? (
-              <section className="panel p-5" aria-label="Turn controls">
-                <div className="flex items-center gap-3">
-                  <span
-                    aria-hidden
-                    className="inline-block h-4 w-4 rounded-full border border-white/70"
-                    style={{ background: activePlayer ? PLAYER_COLORS[seatOf.get(activePlayer.id) ?? 0] : '#555' }}
-                  />
-                  <h2 className="text-lg font-bold">{activePlayer ? `${activePlayer.id}'s turn` : 'Waiting'}</h2>
-                </div>
-                <p className="mt-2 text-sm text-slate-300">{phaseHint}</p>
-
-                {dice && (
-                  <div
-                    key={diceKey}
-                    className="dice-pop mt-4 flex items-center gap-2"
-                    role="status"
-                    aria-label={`Rolled ${dice.die1} and ${dice.die2}`}
-                  >
-                    <span className="flex h-11 w-11 items-center justify-center rounded-lg border border-[#587078] bg-[#1b3038] text-xl font-black">
-                      {dice.die1}
-                    </span>
-                    <span className="flex h-11 w-11 items-center justify-center rounded-lg border border-[#587078] bg-[#1b3038] text-xl font-black">
-                      {dice.die2}
-                    </span>
-                    {dice.isDoubles && <span className="text-sm font-bold text-[#e3bd72]">doubles!</span>}
-                  </div>
-                )}
-
-                <div className="mt-4 flex flex-wrap gap-3">
-                  {state.turnPhase === 'AWAITING_ROLL' && (
-                    <button className="cta" onClick={() => submit('ROLL')} disabled={pending}>
-                      Roll dice
-                    </button>
-                  )}
-                  {state.turnPhase === 'AWAITING_ROLL' && activePlayer && activePlayer.tokens.HOLD >= 1 && (
-                    <button className="secondary" onClick={() => submit('HOLD')} disabled={pending}>
-                      Hold — skip turn ({activePlayer.tokens.HOLD} left)
-                    </button>
-                  )}
-                  {offer && (
-                    <button
-                      className="cta"
-                      onClick={() => submit('BUY', { spaceId: offer.spaceId })}
-                      disabled={pending || (activePlayer !== undefined && activePlayer.cash < offer.listPrice)}
-                    >
-                      Buy {offer.name} — ${offer.listPrice}
-                    </button>
-                  )}
-                  {offer && (
-                    <button className="secondary" onClick={() => submit('PASS_TO_AUCTION')} disabled={pending}>
-                      Decline
-                    </button>
-                  )}
-                  {state.turnPhase === 'TURN_MANAGEMENT' && (
-                    <button className="cta" onClick={() => submit('END_TURN')} disabled={pending}>
-                      End turn
-                    </button>
-                  )}
-                </div>
-                {state.doublesCount > 0 && state.turnPhase !== 'AWAITING_ROLL' && (
-                  <p className="mt-3 text-xs text-[#e3bd72]">
-                    Doubles streak: {state.doublesCount} — a third consecutive doubles sends you to the nearest park.
-                  </p>
-                )}
-              </section>
+              <>
+                <TurnIndicator state={state} seat={activeSeat} dice={dice} diceKey={diceKey} />
+                <ActionDock state={state} pending={pending} onSubmit={submit} />
+              </>
             ) : (
               <section className="panel p-8 text-center" aria-label="Device handoff">
                 <h2 className="text-xl font-bold">Pass the device</h2>
