@@ -6,11 +6,16 @@
  *   npm run sim -- --seeds=500 --md=docs/ECONOMY.md
  *   npm run sim -- --seeds=20
  *   npm run sim -- --modes=BLITZ --players=2,3 --seeds=50 --md=/tmp/blk.md
+ *   npm run sim -- --from-json=tools/sim/results/sim-results.json --md=docs/ECONOMY.md
+ *
+ * --from-json re-renders the report from saved matrix summaries without
+ * re-simulating (rendering is a pure function of the summaries); the
+ * committed report is still reproducible from seeds alone.
  *
  * Full 500-seed matrices are a local/scripted job (spec §14); CI covers
  * the 20-seed smoke through the normal test suite instead.
  */
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ModeId } from '../../src/lib/game/board-v1';
 import { MATRIX_MODES, MATRIX_PLAYER_COUNTS, runMatrix, type MatrixResult } from './matrix';
@@ -22,6 +27,7 @@ interface CliOptions {
   readonly seedCount: number;
   readonly markdownPath: string | null;
   readonly jsonPath: string | null;
+  readonly fromJsonPath: string | null;
 }
 
 function parseList(value: string | undefined): number[] | undefined {
@@ -48,6 +54,7 @@ function parseOptions(argv: readonly string[]): CliOptions {
   let jsonPath: string | null = 'tools/sim/results/sim-results.json';
   let modes: ModeId[] | undefined;
   let playerCounts: number[] | undefined;
+  let fromJsonPath: string | null = null;
   for (const arg of argv) {
     if (arg.startsWith('--seeds=')) {
       seedCount = Number.parseInt(arg.slice('--seeds='.length), 10);
@@ -56,6 +63,8 @@ function parseOptions(argv: readonly string[]): CliOptions {
       markdownPath = arg.slice('--md='.length);
     } else if (arg.startsWith('--json=')) {
       jsonPath = arg.slice('--json='.length);
+    } else if (arg.startsWith('--from-json=')) {
+      fromJsonPath = arg.slice('--from-json='.length);
     } else if (arg.startsWith('--modes=')) {
       modes = parseModeList(arg.slice('--modes='.length));
     } else if (arg.startsWith('--players=')) {
@@ -72,11 +81,24 @@ function parseOptions(argv: readonly string[]): CliOptions {
     seedCount,
     markdownPath,
     jsonPath,
+    fromJsonPath,
   };
 }
 
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
+
+  if (options.fromJsonPath) {
+    // Re-render only: load saved summaries and render the report. No
+    // simulation runs, so no seed count is needed.
+    const saved = JSON.parse(readFileSync(options.fromJsonPath, 'utf8')) as MatrixResult;
+    if (!options.markdownPath) throw new Error('--from-json requires --md=<path> (nothing else to do)');
+    mkdirSync(dirname(options.markdownPath), { recursive: true });
+    writeFileSync(options.markdownPath, renderEconomyReport(saved));
+    process.stderr.write(`sim: rendered ${options.markdownPath} from ${options.fromJsonPath}\n`);
+    return;
+  }
+
   const started = Date.now();
   process.stderr.write(`sim: ${options.modes.length * options.playerCounts.length} cells × ${options.seedCount} seeds\n`);
 

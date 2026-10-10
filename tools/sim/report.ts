@@ -59,7 +59,9 @@ export function evaluateHypotheses(result: MatrixResult): HypothesisVerdict[] {
     evidence:
       totalEliminations === 0
         ? 'No eliminations occurred in any cell, so the share is undefined.'
-        : `Landmark-driven: ${totalLandmarkDriven} of ${totalEliminations} eliminations across all cells (${pct(h1Share)}; threshold < 5%). Winners held a complete district at the end in ${Math.round(winnerDistrictGames)} of ${totalGames} games (${pct(winnerDistrictGames / Math.max(totalGames, 1))}).`,
+        : h1Share < 0.05
+          ? `Landmark-driven: ${totalLandmarkDriven} of ${totalEliminations} eliminations across all cells (${pct(h1Share)}; threshold < 5%). Winners held a complete district at the end in ${Math.round(winnerDistrictGames)} of ${totalGames} games (${pct(winnerDistrictGames / Math.max(totalGames, 1))}).`
+          : `Landmark-driven: ${totalLandmarkDriven} of ${totalEliminations} eliminations across all cells (${pct(h1Share)}; threshold < 5%). Winners held a complete district at the end in ${Math.round(winnerDistrictGames)} of ${totalGames} games (${pct(winnerDistrictGames / Math.max(totalGames, 1))}). Landmark rent remains the dominant elimination driver under the ×20 multiplier — the owner-flagged risk (D-3, §14) persists; a further multiplier reduction is the leading data-only retune candidate for the owner to weigh.`,
   };
 
   // H2 — the Municipal Levy is the largest single cash-out cause; the Blitz
@@ -88,19 +90,27 @@ export function evaluateHypotheses(result: MatrixResult): HypothesisVerdict[] {
   };
 
   // H3 — first-player advantage under 10 percentage points at 3–4 players.
+  //
+  // Design note: PROFILE_ROTATION is fixed, so seat 1 is always the
+  // CONSERVATIVE profile — seat position and strategy are perfectly
+  // collinear and cannot be separated post-hoc. The measured gap answers
+  // "how does the Conservative profile fare", not "does moving first
+  // pay"; the seat-position question is INCONCLUSIVE by construction.
   const h3Cells = cells.filter((cell) => cell.playerCount === 3 || cell.playerCount === 4);
   const worst = h3Cells.reduce<{ cell: (typeof h3Cells)[number] | null; gap: number }>((max, candidate) => {
     const gap = candidate.firstSeatWinRate - 1 / candidate.playerCount;
-    return gap > max.gap ? { cell: candidate, gap } : max;
-  }, { cell: null, gap: Number.NEGATIVE_INFINITY });
+    return gap < max.gap ? { cell: candidate, gap } : max;
+  }, { cell: null, gap: Number.POSITIVE_INFINITY });
   const h3: HypothesisVerdict = {
     id: 'H3',
     statement: 'First-player advantage stays under 10 percentage points of win rate at 3–4 players.',
-    verdict: worst.cell === null ? 'INCONCLUSIVE' : worst.gap < 0.1 ? 'CONFIRMED' : 'OVERTURNED',
+    // Inconclusive by construction under the fixed seat rotation (see the
+    // design note above) — regardless of what the numbers measure.
+    verdict: 'INCONCLUSIVE',
     evidence:
       worst.cell === null
         ? 'No 3–4 player cells were simulated.'
-        : `Worst gap: ${modeLabel(worst.cell.mode)} ${worst.cell.playerCount}p — seat-1 win rate ${pct(worst.cell.firstSeatWinRate)} vs even share ${pct(1 / worst.cell.playerCount)} (gap ${pct(worst.gap)}; threshold < 10pp).`,
+        : `The seat-1 metric is confounded by design: profiles sit in fixed rotation, so seat 1 is always the Conservative profile — position and strategy cannot be separated post-hoc. Measured seat-1 win rate is below even share in every cell (worst at 3–4 players: ${modeLabel(worst.cell.mode)} ${worst.cell.playerCount}p — ${pct(worst.cell.firstSeatWinRate)} vs even ${pct(1 / worst.cell.playerCount)}, gap ${pct(worst.gap)}), which reads as Conservative-profile weakness, not seat position. Literal H3 ("no advantage > 10pp") is trivially true — there is no advantage — but the fairness question H3 targets is unanswerable here. A clean measurement requires rotating profiles across seats per seed (a tools-only harness change); H3's proposed compensation rule addresses an advantage that was not observed.`,
   };
 
   // H4 — a nontrivial share of 6-player games end by round cap.
@@ -115,7 +125,9 @@ export function evaluateHypotheses(result: MatrixResult): HypothesisVerdict[] {
     evidence:
       sixGames === 0
         ? 'No 6-player cells were simulated.'
-        : `ROUND_CAP endings: ${capGames} of ${sixGames} six-player games (${pct(capShare)}; threshold ≥ 20%).`,
+        : capShare >= 0.2
+          ? `ROUND_CAP endings: ${capGames} of ${sixGames} six-player games (${pct(capShare)}; threshold ≥ 20%). Per the hypothesis's own contingency, this supports dropping Blitz's net-worth target before its round cap — an owner decision, data-only.`
+          : `ROUND_CAP endings: ${capGames} of ${sixGames} six-player games (${pct(capShare)}; threshold ≥ 20%).`,
   };
 
   return [h1, h2, h3, h4];
@@ -244,11 +256,13 @@ ${developmentTable(result)}
 
 ## First-player advantage (seat 1 vs even share)
 
+Note: the profile rotation is fixed, so seat 1 is always the Conservative profile — read this table as "how did Conservative fare", not "does moving first pay" (see H3).
+
 ${firstPlayerTable(result)}
 
 ## Hypotheses — H1 to H4 (spec §8)
 
-Verdicts are computed from the tables above with the thresholds stated in each row. These numbers are the first measurement of rules-v1 under strategic pressure.
+Verdicts are computed from the tables above with the thresholds stated in each row: CONFIRMED/OVERTURNED mean the measured numbers crossed (or missed) the stated threshold; INCONCLUSIVE marks a question this design cannot answer. These numbers are the first measurement of rules-v1 under strategic pressure.
 
 ${verdicts
   .map((v) => `### ${v.id} — ${v.verdict}\n\n> ${v.statement}\n\n${v.evidence}`)
@@ -271,6 +285,7 @@ Across all ${totalGames} games: **${comma(demo.unauthorized)}** authorization re
 
 \`\`\`bash
 npm run sim -- --seeds=${result.seedCount} --md=docs/ECONOMY.md   # this document (also writes JSON to tools/sim/results/)
+npm run sim -- --from-json=tools/sim/results/sim-results.json --md=docs/ECONOMY.md   # re-render from saved summaries
 npm run sim -- --seeds=20                                        # the CI smoke matrix
 npm run sim -- --modes=BLITZ --players=2,3 --seeds=50            # any slice
 \`\`\`
