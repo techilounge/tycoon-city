@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { applyCommand, canAct, createGame } from '../../src/lib/game/engine/reducer';
 import { rngForState } from '../../src/lib/game/rng';
-import type { GameCommand } from '../../src/lib/game/commands';
+import type { CommandType, GameCommand } from '../../src/lib/game/commands';
 import type { GameState } from '../../src/lib/game/types';
 import { makeCommand, makeGame, commandId, PLAYER_IDS, GAME_ID, SEED } from './helpers';
 
@@ -138,21 +138,22 @@ test('reducer: authorization — device commands open to any live player, turn c
   }
 });
 
-test('reducer: unimplemented rules commands are rejected COMMAND_NOT_IMPLEMENTED, never no-ops', () => {
+test('reducer: every command type is dispatched — COMMAND_NOT_IMPLEMENTED is unreachable', () => {
   const { state } = makeGame();
   const started = applyCommand(state, makeCommand('START_GAME', { expectedVersion: 0 }), rngForState(state.rngState));
   assert.ok(started.ok);
   if (started.ok) {
-    // PR 4 implemented ROLL, HOLD, BUY, PASS_TO_AUCTION, and END_TURN; PR 5
-    // added SETTLE_DEBT plus the settling-phase liquidation commands
-    // SELL_UPGRADE and MORTGAGE; PR 6 added the auction commands BID and
-    // PASS_BID; PR 7 added the trade commands OFFER_TRADE and ANSWER_TRADE.
-    // The remaining rules commands land with PR 8 and must still refuse to
-    // run.
-    for (const type of ['BUILD', 'UNMORTGAGE', 'SURRENDER'] as const) {
+    // The full vocabulary ships with PR 8: BUILD/UNMORTGAGE/SURRENDER were
+    // the last unimplemented types. From here on the dispatch table must stay
+    // exhaustive — a new command type fails this test until it has a handler.
+    const allTypes = [
+      'ROLL', 'HOLD', 'BUY', 'PASS_TO_AUCTION', 'BID', 'PASS_BID', 'SETTLE_DEBT', 'SELL_UPGRADE',
+      'MORTGAGE', 'BUILD', 'UNMORTGAGE', 'OFFER_TRADE', 'ANSWER_TRADE', 'SURRENDER', 'END_TURN',
+      'START_GAME', 'SAVE_SNAPSHOT',
+    ] as const satisfies readonly CommandType[];
+    for (const type of allTypes) {
       const result = applyCommand(started.state, makeCommand(type, { expectedVersion: started.state.version, commandId: commandId() }), rngForState(started.state.rngState));
-      assert.equal(result.ok, false, `${type} must not apply in this rules build`);
-      if (result.ok === false) assert.equal(result.error.code, 'COMMAND_NOT_IMPLEMENTED');
+      assert.equal(result.ok === false && result.error.code === 'COMMAND_NOT_IMPLEMENTED', false, `${type} must have a dispatch arm, not COMMAND_NOT_IMPLEMENTED`);
     }
   }
 });
