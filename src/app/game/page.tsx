@@ -4,13 +4,16 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ActionDock } from '@/components/ActionDock';
+import { AuctionModal } from '@/components/AuctionModal';
 import { Board } from '@/components/Board';
 import { PlayerRail } from '@/components/PlayerRail';
+import { TradeComposerModal, TradeReviewModal } from '@/components/TradeModal';
 import { TurnIndicator } from '@/components/TurnIndicator';
 import { MODES, MODE_IDS, type ModeId } from '@/lib/game/board-v1';
 import type { CommandType, GameCommand } from '@/lib/game/commands';
 import { LocalCommandSink } from '@/lib/game/engine/transport';
 import type { AnyGameEvent } from '@/lib/game/events';
+import { modalPlan } from '@/lib/game/ui/modals';
 import { currentTurnDice, describeEvent } from '@/lib/game/ui/uiPlayer';
 import { gameOverSummary, victoryReasonText } from '@/lib/game/ui/actionDock';
 import type { GameState } from '@/lib/game/types';
@@ -96,6 +99,10 @@ function GameScreen() {
   const [error, setError] = useState<string | null>(null);
   /** Hot-seat privacy (spec §11): false hides the board until the next player takes the handoff. */
   const [revealed, setRevealed] = useState(true);
+  /** Trade composer bookkeeping (spec §11): open builder + the pending trade it counters, if any. */
+  const [tradeBuilder, setTradeBuilder] = useState<{ counterOf: string | null } | null>(null);
+  /** The pending-trade review the user dismissed — a NEW offer (different id) re-opens it. */
+  const [dismissedTradeId, setDismissedTradeId] = useState<string | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const commandCounter = useRef(0);
   const gameCounter = useRef(0);
@@ -109,6 +116,9 @@ function GameScreen() {
     }
     if (!result.applied) return; // idempotent duplicate — nothing changed
     setState(result.state);
+    // The trade composer belongs to the active player's TURN_MANAGEMENT — any
+    // phase change (turn pass, doubles re-roll, move resolution) closes it.
+    if (result.state.turnPhase !== 'TURN_MANAGEMENT') setTradeBuilder(null);
     // Handoff gate: pause for the next player when the turn changes hands.
     // Game start is not a handoff — the first TURN_STARTED reveals controls
     // directly (spec §11).
@@ -231,6 +241,11 @@ function GameScreen() {
   const activePlayer = state.players.find((p) => p.id === state.activePlayerId);
   const activeSeat = activePlayer ? activePlayer.seat : 0;
   const over = gameOverSummary(history);
+  const plan = modalPlan(state, {
+    tradeBuilderOpen: tradeBuilder !== null,
+    counterOf: tradeBuilder?.counterOf ?? null,
+    dismissedTradeId,
+  });
   const logLines = history
     .map(describeEvent)
     .filter((line): line is string => line !== null)
@@ -250,7 +265,7 @@ function GameScreen() {
           <p className="mt-3 text-sm text-slate-300">
             Round {state.round} · {MODES[state.mode].name} · seed {state.seed}
           </p>
-          <button className="cta mt-6 w-full" onClick={() => setRevealed(true)}>
+          <button className="cta mt-6 w-full" onClick={() => { setRevealed(true); setDismissedTradeId(null); }}>
             {activePlayer ? `I'm ${activePlayer.id} — show my view` : 'Continue'}
           </button>
         </section>
@@ -297,7 +312,13 @@ function GameScreen() {
 
           <aside className="flex flex-col gap-4">
             <TurnIndicator state={state} seat={activeSeat} dice={dice} diceKey={diceKey} />
-            <ActionDock state={state} pending={pending} onSubmit={submit} />
+            <ActionDock state={state} pending={pending} onSubmit={submit} onOpenTrade={() => setTradeBuilder({ counterOf: null })} />
+
+            {state.trade !== null && dismissedTradeId === state.trade.tradeId && (
+              <button className="secondary text-sm" onClick={() => setDismissedTradeId(null)}>
+                Review the pending trade offer…
+              </button>
+            )}
 
             <PlayerRail state={state} />
 
@@ -330,6 +351,30 @@ function GameScreen() {
             Back to the lobby
           </button>
         </section>
+      )}
+
+      {plan.kind === 'AUCTION' && (
+        <AuctionModal key={state.auction?.auctionId ?? 'auc'} state={state} pending={pending} onSubmit={submit} />
+      )}
+      {plan.kind === 'TRADE_REVIEW' && (
+        <TradeReviewModal
+          key={state.trade?.tradeId ?? 'review'}
+          state={state}
+          pending={pending}
+          onSubmit={submit}
+          onCounter={() => setTradeBuilder({ counterOf: state.trade?.tradeId ?? null })}
+          onClose={() => setDismissedTradeId(state.trade?.tradeId ?? null)}
+        />
+      )}
+      {plan.kind === 'TRADE_BUILDER' && (
+        <TradeComposerModal
+          key={`composer-${plan.counterOf ?? 'new'}`}
+          state={state}
+          pending={pending}
+          onSubmit={submit}
+          counterOf={plan.counterOf}
+          onClose={() => setTradeBuilder(null)}
+        />
       )}
     </main>
   );

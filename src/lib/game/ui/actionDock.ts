@@ -133,7 +133,7 @@ export function dockGroups(state: GameState): readonly DockGroup[] {
       groups.push({
         id: 'end',
         title: `${actorName} — manage, then end the turn`,
-        note: 'The trade composer, event modals, and save/resume arrive with the full UI update.',
+        note: 'Develop, trade, or end the turn — the composer and modals open over the board.',
         actions: [{ command: 'END_TURN', label: 'End turn', primary: true }],
       });
 
