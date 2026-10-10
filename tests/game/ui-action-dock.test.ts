@@ -219,6 +219,33 @@ describe('tradePanel', () => {
     );
     assert.equal(tradePanel(craftedState({})), null);
   });
+
+  it('renders board display names in the summary, not raw space ids', () => {
+    const state = craftedState({
+      trade: {
+        tradeId: 'tr-2',
+        proposerId: 'Ada',
+        recipientId: 'Grace',
+        offer: { give: { cash: 0, spaceIds: ['harbor-beaconside'] }, receive: { cash: 100, spaceIds: [] } },
+        anchorTurn: null,
+      },
+    });
+    const panel = tradePanel(state);
+    assert.ok(panel);
+    assert.equal(panel.summary, 'Ada offers Beaconside Terrace for $100');
+    // Unknown ids (e.g. a future board edit) still render instead of going blank.
+    const unknown = tradePanel(craftedState({
+      trade: {
+        tradeId: 'tr-3',
+        proposerId: 'Ada',
+        recipientId: 'Grace',
+        offer: { give: { cash: 0, spaceIds: ['not-a-space'] }, receive: { cash: 0, spaceIds: [] } },
+        anchorTurn: null,
+      },
+    }));
+    assert.ok(unknown);
+    assert.ok(unknown.summary.includes('not-a-space'));
+  });
 });
 
 describe('turnHeadline', () => {

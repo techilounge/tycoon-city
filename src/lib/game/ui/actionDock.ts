@@ -133,7 +133,7 @@ export function dockGroups(state: GameState): readonly DockGroup[] {
       groups.push({
         id: 'end',
         title: `${actorName} — manage, then end the turn`,
-        note: 'The trade composer, event modals, and save/resume arrive with the full UI update.',
+        note: 'Develop, trade, or end the turn — the composer and modals open over the board.',
         actions: [{ command: 'END_TURN', label: 'End turn', primary: true }],
       });
 
@@ -324,8 +324,13 @@ export interface TradePanel {
 function sideSummary(cash: number, spaceIds: readonly string[]): string {
   const parts: string[] = [];
   if (cash > 0) parts.push(`$${cash.toLocaleString()}`);
-  if (spaceIds.length > 0) parts.push(spaceIds.join(', '));
+  if (spaceIds.length > 0) parts.push(...spaceIds.map(nameOfSpace));
   return parts.length > 0 ? parts.join(' + ') : 'nothing';
+}
+
+/** Display name for a space id, falling back to the raw id (never silently blank). */
+function nameOfSpace(spaceId: string): string {
+  return BOARD_SPACES.find((s) => s.id === spaceId)?.name ?? spaceId;
 }
 
 /** The one pending trade as the dock renders it; null when nothing is pending. */

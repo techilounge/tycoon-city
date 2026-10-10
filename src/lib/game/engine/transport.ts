@@ -100,6 +100,16 @@ export class LocalCommandSink implements CommandSink {
     return new LocalCommandSink(created.state, created.events, options.snapshots ?? new InMemorySnapshotStore());
   }
 
+  /**
+   * Resume (spec §2.4): continue a game from a schema-validated snapshot.
+   * The resumed log starts empty — state carries the full truth — and event
+   * sequences keep their per-game continuity because the reducer derives
+   * them from state (gapless across the fold).
+   */
+  static resume(snapshot: GameSnapshot, snapshots?: SnapshotStore): LocalCommandSink {
+    return new LocalCommandSink(snapshot.state, [], snapshots ?? new InMemorySnapshotStore());
+  }
+
   /** EventSource over this sink's log. */
   readonly events: EventSource;
 

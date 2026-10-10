@@ -8,4 +8,6 @@
 @keyframes token-land{0%{transform:scale(1.6)}60%{transform:scale(.92)}100%{transform:scale(1)}}
 .handoff-in{animation:handoff-in .3s ease-out}
 @keyframes handoff-in{0%{opacity:0;transform:translateY(8px)}100%{opacity:1;transform:translateY(0)}}
-@media (prefers-reduced-motion:reduce){.dice-pop,.token-land,.handoff-in{animation:none}}
+.modal-in{animation:modal-in .25s ease-out}
+@keyframes modal-in{0%{opacity:0;transform:translateY(12px) scale(.98)}100%{opacity:1;transform:translateY(0) scale(1)}}
+@media (prefers-reduced-motion:reduce){.dice-pop,.token-land,.handoff-in,.modal-in{animation:none}}
