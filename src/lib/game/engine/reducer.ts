@@ -24,6 +24,7 @@ import { moveForward, nearestParkIndex } from './movement';
 import { resolveLanding } from './economy';
 import { isDebtHopeless, mortgageHandler, settleDebtHandler, sellUpgradeHandler } from './debt';
 import { bidHandler, passBidHandler, passToAuctionHandler, requireAuctionableLandedSpace } from './auctions';
+import { answerTradeHandler, expireAnchoredOffer, offerTradeHandler, resolveAnchorAtTurnStart } from './trading';
 import type { GameStateDraft, DraftPlayer } from './draft';
 import { requirePlayer } from './draft';
 
@@ -156,12 +157,12 @@ export function applyCommand(state: GameState, command: GameCommand, rng: Random
 
 /**
  * Pure authorization predicate (spec §10) — shipped now and reused verbatim
- * by the Phase 2 server. PR 2 covers the machinery commands; the remaining
- * actor classes join as their rules land: designated trade recipients (PR 7)
- * and PR 8's elimination-auction and estate cases. Auction bidders are
- * authorized here since PR 6 (spec §5); debt-settlement commands run in
- * SETTLING_DEBT, where the debtor IS the active player, so the active-player
- * default already covers them.
+ * by the Phase 2 server. Covers the machinery commands, auction bidders
+ * (PR 6), and designated trade recipients (PR 7): OFFER_TRADE stays on the
+ * active-player default — the debtor IS the active player during
+ * SETTLING_DEBT, so row 13's settlement proposals need no special case.
+ * Remaining actor classes join with PR 8's elimination-auction and estate
+ * cases.
  */
 export function canAct(state: GameState, command: GameCommand): boolean {
   const actor = state.players.find((player) => player.id === command.actorId);
@@ -179,6 +180,14 @@ export function canAct(state: GameState, command: GameCommand): boolean {
       // phase check could name INVALID_PHASE (pipeline order, spec §2.1).
       const auction = state.auction;
       return auction !== null && !auction.passedPlayerIds.includes(command.actorId);
+    }
+    case 'ANSWER_TRADE': {
+      // Designated trade recipient (spec §6): the pending offer's recipient
+      // — who may well not be the active player, since a counter's recipient
+      // IS the player whose turn it is. With no pending offer nobody can
+      // answer, so authorization fails at step 5, before any phase check.
+      const trade = state.trade;
+      return trade !== null && trade.recipientId === command.actorId;
     }
     default:
       // Turn-scoped commands default to the active player (spec §10).
@@ -219,6 +228,12 @@ function advanceToNextTurn(draft: GameStateDraft, fromPlayerId: PlayerId): reado
   const from = requirePlayer(draft, fromPlayerId);
   const count = draft.players.length;
   const events: AnyEventInput[] = [];
+  // Pending-offer expiry (spec §6): this is the one path every turn-passing
+  // row (2, 4, 12) shares, so it is where an offer anchored to the ending
+  // turn dies — a pure turn-counter comparison, no wall clock. A doubles
+  // extra cycle never passes through here (same ordinal, no handover), so
+  // an offer survives it.
+  expireAnchoredOffer(draft, events);
   let turnCounter = draft.turn;
   let chosen: DraftPlayer | undefined;
   // players is seat-ordered by construction (createGame maps seat = index).
@@ -239,6 +254,9 @@ function advanceToNextTurn(draft: GameStateDraft, fromPlayerId: PlayerId): reado
   draft.turn = turnCounter;
   draft.activePlayerId = chosen.id;
   draft.turnPhase = 'AWAITING_ROLL';
+  // A counter anchors to its proposer's NEXT turn (spec §6): that turn
+  // begins here — stamp its ordinal into the offer so its end expires it.
+  resolveAnchorAtTurnStart(draft, chosen.id, turnCounter);
   events.push({ type: 'TURN_STARTED', payload: { playerId: chosen.id, turn: turnCounter } });
   return events;
 }
@@ -363,8 +381,9 @@ function endTurnHandler(draft: GameStateDraft, command: GameCommand): readonly A
   // Doubles extra cycle: same player, same turn ordinal, straight back to
   // AWAITING_ROLL (spec §4 row 12). The counter cannot be 3 here — the third
   // consecutive double ends the turn inside ROLL (row 4).
-  // Pending-offer expiry (PR 7) runs only when the turn passes; victory
-  // checks are PR 8's seam at every TURN_ENDED.
+  // Pending offers survive the extra cycle (same ordinal) and expire when
+  // the turn actually passes — the expiry lives in advanceToNextTurn
+  // (spec §6). Victory checks are PR 8's seam at every TURN_ENDED.
   if (draft.doublesCount > 0 && draft.doublesCount < 3) {
     draft.turnPhase = 'AWAITING_ROLL';
     events.push({ type: 'TURN_STARTED', payload: { playerId: player.id, turn: draft.turn } });
@@ -374,7 +393,7 @@ function endTurnHandler(draft: GameStateDraft, command: GameCommand): readonly A
   return events;
 }
 
-/** Rules PRs (7–8) add handlers here; the pipeline itself is closed. */
+/** Rules PRs (8) add handlers here; the pipeline itself is closed. */
 const HANDLERS: { [T in CommandType]?: CommandHandler } = {
   START_GAME: startGameHandler,
   SAVE_SNAPSHOT: saveSnapshotHandler,
@@ -387,6 +406,8 @@ const HANDLERS: { [T in CommandType]?: CommandHandler } = {
   SETTLE_DEBT: settleDebtHandler,
   SELL_UPGRADE: sellUpgradeHandler,
   MORTGAGE: mortgageHandler,
+  OFFER_TRADE: offerTradeHandler,
+  ANSWER_TRADE: answerTradeHandler,
   END_TURN: endTurnHandler,
 };
 
@@ -437,6 +458,7 @@ export function createGame(input: CreateGameInput): CreateGameResult {
     eventDeck: { drawPile: [], discardPile: [] },
     debt: null,
     auction: null,
+    trade: null,
     rulesVersion: RULES_VERSION,
     seed,
     rngState: seed >>> 0,
