@@ -22,7 +22,7 @@ npm run sim -- --seeds=20     # simulation smoke matrix (CI-enforced)
 | `tests/game/*.test.ts` | Engine contracts: envelopes, idempotency, version conflicts, replay-hash equality, movement, economy, auctions, trades, development, bankruptcy, victory |
 | `tests/game/ui-*.test.ts` | UI-adjacent pure logic: legal-command derivation (action dock), board layout, modal priority, save/resume persistence, presentation rules, trade composition |
 | `tests/sim/harness.test.ts` | Balance-simulation harness: strategy profile contracts, seed derivation, a full micro-matrix with all §17.3 demonstration assertions, rerun determinism |
-| `tests/server/*.test.ts` | The networked server (PR 14–17): SQLite persistence, the wire gateway, authoritative rooms, redaction, rate limits, conformance probes, durability across restarts, and the deadline matrix (`deadlines.test.ts` — expiry paths, queue races, resume, broadcast) |
+| `tests/server/*.test.ts` | The networked server (PR 14–16): SQLite persistence, the wire gateway, authoritative rooms, redaction, rate limits, conformance probes, durability across restarts, and the deadline matrix (`deadlines.test.ts` — expiry paths, queue races, resume, broadcast) |
 | `tools/sim/**` | The harness itself (`npm run sim`) — not imported by the app |
 
 ## The multiplayer-contract demonstration (spec §17.3)
@@ -62,7 +62,7 @@ roughly 30 s), each game ending with a replay-hash check. This keeps the
 demonstration and the engine's determinism under continuous regression
 pressure without the cost of the full 500-seed matrix.
 
-## Deadline enforcement (PR 17)
+## Deadline enforcement (PR 16)
 
 Deadlines are server timers that act like players: on expiry the host
 submits an **ordinary command** through the same per-game queue as player

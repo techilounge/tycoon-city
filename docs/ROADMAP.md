@@ -36,7 +36,7 @@ Delivered so far:
 |---|---|
 | #14 | One-port custom server: Socket.IO + SQLite (games, event log, sessions) with rate limits |
 | #15 | Authoritative game service: rooms, session tokens, redacted broadcasts, reconnect catch-up, durable command ledger |
-| #17 (this PR) | Server-enforced deadlines — per-mode turn windows and the auction bid window, expiry actions submitted as ordinary ledgered commands through the per-game queue; the additive bank-acted `VOID_BID` command + `AUCTION_BID_VOIDED` event (§3 rows moved to implemented) |
+| #16 (this PR) | Server-enforced deadlines — per-mode turn windows and the auction bid window, expiry actions submitted as ordinary ledgered commands through the per-game queue; the additive bank-acted `VOID_BID` command + `AUCTION_BID_VOIDED` event (§3 rows moved to implemented) |
 
 Still open in Phase 2: the client online-mode experience (transport factory, room panel, DeadlineBar), AI substitution, and spectator projections.
 

@@ -116,13 +116,13 @@ deviating from the original "every interface ships as code in PR 2"
 expectation — because no local behavior could exercise them meaningfully. The
 status column tracks the Phase 2 implementation as it lands: the server
 foundation (PR 15) shipped reconnection, and the deadline rows shipped with
-PR 17; AI substitution and spectator projections remain specified-only.
+PR 16; AI substitution and spectator projections remain specified-only.
 
 | Contract | Phase 2 shape | Phase 1 status | Phase 2 status |
 |---|---|---|---|
 | Reconnection | Load snapshot, stream missed events `fromSeq` → now; gapless sequences make catch-up exact | n/a (single device); the `fromSeq` subscription already exists | **Implemented** (PR 15): token re-auth + snapshot + catch-up from the last seen sequence |
-| Turn & auction deadlines | Server-enforced `DeadlinePolicy` — auto-pass on expiry, void-bid on disqualification | none in code; the UI timer is cosmetic and the engine is wall-clock-free by design | **Implemented** (PR 17): `server/game/deadlines.ts` arms per-mode windows and submits ordinary, ledgered `server-auto-…` commands through the per-game queue (`tests/server/deadlines.test.ts`); the engine stays wall-clock-free — no `Date.now()` entered the reducer |
-| Async-bid void-and-reopen | A high bidder who becomes ineligible (timeout) is voided; the auction continues without them; with no bids remaining it closes unsold | impossible in Phase 1 (no payment can occur while an auction is open, so a winning bid is always payable) | **Implemented** (PR 17): the additive `VOID_BID` command (bank-acted) + `AUCTION_BID_VOIDED` event void a timed-out high bid — bidding restarts at the opening minimum, and with no eligible bidders left the sale closes unsold via the existing end path (`tests/game/void-bid.test.ts`) |
+| Turn & auction deadlines | Server-enforced `DeadlinePolicy` — auto-pass on expiry, void-bid on disqualification | none in code; the UI timer is cosmetic and the engine is wall-clock-free by design | **Implemented** (PR 16): `server/game/deadlines.ts` arms per-mode windows and submits ordinary, ledgered `server-auto-…` commands through the per-game queue (`tests/server/deadlines.test.ts`); the engine stays wall-clock-free — no `Date.now()` entered the reducer |
+| Async-bid void-and-reopen | A high bidder who becomes ineligible (timeout) is voided; the auction continues without them; with no bids remaining it closes unsold | impossible in Phase 1 (no payment can occur while an auction is open, so a winning bid is always payable) | **Implemented** (PR 16): the additive `VOID_BID` command (bank-acted) + `AUCTION_BID_VOIDED` event void a timed-out high bid — bidding restarts at the opening minimum, and with no eligible bidders left the sale closes unsold via the existing end path (`tests/game/void-bid.test.ts`) |
 | AI substitution | `AutoPlayerStrategy` fills disconnected seats | interface stub not implemented (documented, spec §10) | Not yet — specified-only |
 | Spectator projections | `projectPublicState(state, viewerId)` redacts server secrets and private info | identity in hot-seat (all state is on one trusted device) | Not yet — specified-only (player-facing redaction ships first) |
 
