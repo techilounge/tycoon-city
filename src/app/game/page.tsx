@@ -28,6 +28,7 @@ import {
 import type { GameSnapshot } from '@/lib/game/snapshot-schema';
 import { gameOverSummary } from '@/lib/game/ui/actionDock';
 import type { GameState } from '@/lib/game/types';
+import { OnlineGameScreen } from './OnlineGameScreen';
 
 /**
  * The Phase 1 game screen (spec §12 PR 10): the premium local hot-seat game —
@@ -130,7 +131,16 @@ export default function GamePage() {
   );
 }
 
+/** Routes the URL to the networked screen or the hot-seat one (spec "Client experience"). */
 function GameScreen() {
+  const searchParams = useSearchParams();
+  if (searchParams.get('mode') === 'online') {
+    return <OnlineGameScreen code={(searchParams.get('code') ?? '').trim().toUpperCase()} />;
+  }
+  return <LocalGameScreen />;
+}
+
+function LocalGameScreen() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const config = useMemo(() => parseGameConfig(searchParams), [searchParams]);

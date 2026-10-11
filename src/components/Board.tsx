@@ -1,4 +1,4 @@
-import type { GameState } from '@/lib/game/types';
+import type { ClientGameState } from '@/lib/game/transport/clientState';
 import { BOARD_SPACES, isPurchasable, MODES, type BoardSpace } from '@/lib/game/board-v1';
 import { CENTER_PLACEMENT, districtTint, perimeterGridPosition } from '@/lib/game/ui/boardLayout';
 import { playerColor, tileCaption } from '@/lib/game/ui/uiPlayer';
@@ -28,7 +28,7 @@ function spaceBg(space: BoardSpace): string {
   }
 }
 
-function SpaceCell({ space, index, state }: { space: BoardSpace; index: number; state: GameState }) {
+function SpaceCell({ space, index, state }: { space: BoardSpace; index: number; state: ClientGameState }) {
   const position = perimeterGridPosition(index);
   const seatOf = new Map(state.players.map((p, i) => [p.id, i]));
   const active = state.players.find((p) => p.id === state.activePlayerId);
@@ -96,7 +96,7 @@ function SpaceCell({ space, index, state }: { space: BoardSpace; index: number; 
   );
 }
 
-export function Board({ state }: { state: GameState }) {
+export function Board({ state }: { state: ClientGameState }) {
   const mode = MODES[state.mode];
   return (
     <div className="panel p-2 sm:p-4" data-testid="perimeter-board">

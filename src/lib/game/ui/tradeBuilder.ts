@@ -10,7 +10,8 @@
  * offer being countered.
  */
 import { BOARD_SPACES, isPurchasable, type PurchasableSpace } from '../board-v1';
-import type { GameState, PlayerId, SpaceId, TradeOffer } from '../types';
+import type { PlayerId, SpaceId, TradeOffer } from '../types';
+import type { ClientGameState } from '../transport/clientState';
 
 export type TradeSideKey = 'give' | 'receive';
 
@@ -32,7 +33,7 @@ export function newTradeBuilder(recipientId: PlayerId | null = null): TradeBuild
  * offer's recipient) gives what they were set to receive, and receives what
  * the original proposer offered. Empty cash drafts stay empty for editing.
  */
-export function counterTradeBuilder(state: GameState): TradeBuilderState {
+export function counterTradeBuilder(state: ClientGameState): TradeBuilderState {
   const pending = state.trade;
   if (!pending) return newTradeBuilder();
   return {
@@ -66,7 +67,7 @@ export function toggleTradeSpace(builder: TradeBuilderState, side: TradeSideKey,
 }
 
 /** The purchasable spaces `playerId` owns — one side's picker list, board order. */
-export function ownedPurchasables(state: GameState, playerId: PlayerId): readonly PurchasableSpace[] {
+export function ownedPurchasables(state: ClientGameState, playerId: PlayerId): readonly PurchasableSpace[] {
   return BOARD_SPACES.filter((space): space is PurchasableSpace => isPurchasable(space) && state.owners[space.id] === playerId);
 }
 
@@ -100,7 +101,7 @@ export interface TradeBuilderValidity {
  * each named space is owned by the side that gives it, and the offer is not
  * empty. Final authority is the engine's.
  */
-export function tradeBuilderValidity(state: GameState, builder: TradeBuilderState, proposerId: PlayerId): TradeBuilderValidity {
+export function tradeBuilderValidity(state: ClientGameState, builder: TradeBuilderState, proposerId: PlayerId): TradeBuilderValidity {
   const problems = new Set<string>();
 
   const recipient = builder.recipientId ? state.players.find((p) => p.id === builder.recipientId) : undefined;

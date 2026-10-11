@@ -1,6 +1,6 @@
 /**
  * Context-sensitive action dock (spec §11, §12 PR 10): a pure projection of
- * GameState onto the commands that are legal right now, each with a plain
+ * ClientGameState onto the commands that are legal right now, each with a plain
  * reason when disabled. The reducer owns legality — this module renders it,
  * reusing the same rules-v1 formulas the engine uses instead of duplicating
  * them. The dock component renders these structures; nothing here touches DOM.
@@ -22,7 +22,8 @@ import {
   upgradeSellBackProceeds,
 } from '../rules-v1';
 import type { AnyGameEvent, VictoryReason } from '../events';
-import type { AuctionState, GameState, PlayerId, PlayerState } from '../types';
+import type { AuctionState, PlayerId, PlayerState } from '../types';
+import type { ClientGameState } from '../transport/clientState';
 import type { CommandType } from '../commands';
 import { buyOffer } from './uiPlayer';
 
@@ -60,18 +61,18 @@ function districtSpaces(districtId: DistrictId): readonly PropertySpace[] {
 }
 
 /** True when one player owns every space of the district (the BUILD prerequisite, spec §8). */
-export function districtComplete(state: GameState, districtId: DistrictId, ownerId: PlayerId): boolean {
+export function districtComplete(state: ClientGameState, districtId: DistrictId, ownerId: PlayerId): boolean {
   return districtSpaces(districtId).every((space) => state.owners[space.id] === ownerId);
 }
 
-function playerById(state: GameState, playerId: PlayerId): PlayerState {
+function playerById(state: ClientGameState, playerId: PlayerId): PlayerState {
   const player = state.players.find((p) => p.id === playerId);
   if (!player) throw new Error(`actionDock: unknown player ${playerId}`);
   return player;
 }
 
 /** LOBBY / GAME_OVER / each turn phase → its dock groups. */
-export function dockGroups(state: GameState): readonly DockGroup[] {
+export function dockGroups(state: ClientGameState): readonly DockGroup[] {
   if (state.phase === 'LOBBY') {
     return [
       {
@@ -287,7 +288,7 @@ function passDisabledReasonFor(auction: AuctionState, playerId: PlayerId): strin
 }
 
 /** The open auction as the dock renders it; null when no auction is open. */
-export function auctionPanel(state: GameState): AuctionPanel | null {
+export function auctionPanel(state: ClientGameState): AuctionPanel | null {
   const auction = state.auction;
   if (!auction) return null;
   const space = BOARD_SPACES.find((s) => s.id === auction.spaceId);
@@ -334,7 +335,7 @@ function nameOfSpace(spaceId: string): string {
 }
 
 /** The one pending trade as the dock renders it; null when nothing is pending. */
-export function tradePanel(state: GameState): TradePanel | null {
+export function tradePanel(state: ClientGameState): TradePanel | null {
   const trade = state.trade;
   if (!trade) return null;
   return {
@@ -350,7 +351,7 @@ export function tradePanel(state: GameState): TradePanel | null {
 }
 
 /** The turn indicator headline (spec §11: a clear active-player indicator). */
-export function turnHeadline(state: GameState): string {
+export function turnHeadline(state: ClientGameState): string {
   if (state.phase === 'LOBBY') return 'Lobby';
   if (state.phase === 'GAME_OVER') return 'Game over';
   const active = state.players.find((p) => p.id === state.activePlayerId);

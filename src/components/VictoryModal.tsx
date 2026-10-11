@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import type { GameState } from '@/lib/game/types';
+import type { ClientGameState } from '@/lib/game/transport/clientState';
 import { netWorthFromState } from '@/lib/game/rules-v1';
 import { victoryReasonText, type GameOverSummary } from '@/lib/game/ui/actionDock';
 import { playerColor } from '@/lib/game/ui/uiPlayer';
@@ -14,7 +14,7 @@ interface Standing {
 }
 
 /** Final standings by canonical net worth (spec §9) — pure fold over players. */
-function finalStandings(state: GameState): readonly Standing[] {
+function finalStandings(state: ClientGameState): readonly Standing[] {
   return state.players
     .map((p) => ({ playerId: p.id, cash: p.cash, netWorth: netWorthFromState(state, p.id) }))
     .sort((a, b) => b.netWorth - a.netWorth || a.playerId.localeCompare(b.playerId));
@@ -32,7 +32,7 @@ export function VictoryModal({
   onBackToLobby,
 }: {
   summary: GameOverSummary;
-  state: GameState;
+  state: ClientGameState;
   onDismiss: () => void;
   onBackToLobby: () => void;
 }) {

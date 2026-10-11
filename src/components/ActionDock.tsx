@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { GameState } from '@/lib/game/types';
+import type { ClientGameState } from '@/lib/game/transport/clientState';
 import type { DockAction } from '@/lib/game/ui/actionDock';
 import type { PlayerId } from '@/lib/game/types';
 import { dockGroups } from '@/lib/game/ui/actionDock';
@@ -66,7 +66,7 @@ export function ActionDock({
   onSubmit,
   onOpenTrade,
 }: {
-  state: GameState;
+  state: ClientGameState;
   pending: boolean;
   onSubmit: Submit;
   /** Present when the trade composer may open (TURN_MANAGEMENT, no pending offer) —
@@ -105,7 +105,7 @@ export function DockActionGroups({
   pending,
   onSubmit,
 }: {
-  state: GameState;
+  state: ClientGameState;
   pending: boolean;
   onSubmit: Submit;
 }) {

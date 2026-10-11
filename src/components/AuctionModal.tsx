@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import type { GameState, PlayerId } from '@/lib/game/types';
+import type { PlayerId } from '@/lib/game/types';
+import type { ClientGameState } from '@/lib/game/transport/clientState';
 import { auctionPanel } from '@/lib/game/ui/actionDock';
 import { playerColor } from '@/lib/game/ui/uiPlayer';
 import { AUCTION_MINIMUM_INCREMENT, AUCTION_OPENING_BID } from '@/lib/game/rules-v1';
@@ -19,7 +20,7 @@ export function AuctionModal({
   pending,
   onSubmit,
 }: {
-  state: GameState;
+  state: ClientGameState;
   pending: boolean;
   onSubmit: (type: 'BID' | 'PASS_BID', payload?: Record<string, unknown>, actorId?: PlayerId) => void;
 }) {
