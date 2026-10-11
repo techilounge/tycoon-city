@@ -71,3 +71,11 @@ fragments) matched **nothing** in any board, card, rules, or UI string.
 3. Re-run this audit whenever `board-v1.ts`, `rules-v1.ts`, `docs/RULES.md`,
    or UI-facing strings change materially. The sweep is reproducible: grep
    the CI list plus genre phrases over `src/ tools/ tests/ docs/ *.md`.
+4. **Phase 2 re-run (2026-10-11, PR 17): CLEAN.** The deadline surface added
+   new identifiers — `VOID_BID`, `AUCTION_BID_VOIDED`, `DeadlinePolicy`,
+   `DeadlineScheduler`, `DeadlineBroadcast`, `game:deadline`,
+   `server-auto-…` command ids, and their handlers — all original coinages
+   in Tycoon City's vocabulary. The CI banned-term sweep (31 patterns) ran
+   green in the full suite, and the extended genre-phrase list was re-grepped
+   over `server/game/`, the wire protocol, and both new test files: no
+   matches.

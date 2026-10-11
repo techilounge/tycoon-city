@@ -224,3 +224,27 @@ idempotency ledger, gapless event sequences, and replay — are specified in
 `docs/MULTIPLAYER_CONTRACT.md`, including which of them are already code
 versus documented contract. Nothing in the engine reads the clock, the DOM, or
 ambient randomness, so the same reducer can run on either side of that line.
+
+## 11. Server-enforced deadlines — timers that act like players
+
+The server owns the clock (contract §3): `server/game/deadlines.ts` defines
+the `DeadlinePolicy` per mode (turn windows: Classic 90 s / Quick 60 s /
+Blitz 45 s; auction bid window: 30 s — tunable constants) and the
+`DeadlineScheduler` arms one window per pending decision, re-armed from the
+current state after every applied command and on resume — every state change
+grants a full fresh window ("decision idle timeout", not a shared budget).
+
+On expiry the scheduler invents no engine semantics: the host composes an
+**ordinary command** — the pending turn decision's timeout action for the
+expired player (`ROLL` / `PASS_TO_AUCTION` / `SURRENDER` / `END_TURN`), the
+bank's `VOID_BID` for a standing timed-out high bid, or a binding `PASS_BID`
+for an AFK bidless auction — and submits it through the **same per-game
+queue** as player commands, under a `server-auto-…` command id, so it crosses
+the identical 8-step pipeline, is ledgered, and replays exactly like any
+other submission. Composition and application are one queue task: a player
+command can never interleave between them, so a deadline either applies
+(winning the version race over later submissions) or is dropped by the
+scheduler's generation check when a state change already resolved it. The
+engine stays wall-clock-free — the timers live entirely server-side; clients
+learn the current windows only from the `game:deadline` broadcast
+(`DeadlineBar` renders them, presentation-only).

@@ -108,20 +108,23 @@ catch-up, and dispute audits possible without new engine code.
 (probes included) from `{ seed, mode, players }` to the live final state hash
 (§17.3(d)) — 6,000/6,000 identical in the committed report.
 
-## 3. Contracts documented-only until Phase 2 (no Phase 2 code exists)
+## 3. Phase 2 contracts — specified in Phase 1, implemented as Phase 2 lands
 
-These are specified now so the Phase 2 design cannot quietly break them. They
-are **not** in the Phase 1 codebase as runtime interfaces — deviating from the
-original "every interface ships as code in PR 2" expectation — because no
-local behavior could exercise them meaningfully; they are noted here plainly.
+These were specified in Phase 1 so the Phase 2 design could not quietly break
+them. They were **not** in the Phase 1 codebase as runtime interfaces —
+deviating from the original "every interface ships as code in PR 2"
+expectation — because no local behavior could exercise them meaningfully. The
+status column tracks the Phase 2 implementation as it lands: the server
+foundation (PR 15) shipped reconnection, and the deadline rows shipped with
+PR 17; AI substitution and spectator projections remain specified-only.
 
-| Contract | Phase 2 shape | Phase 1 status |
-|---|---|---|
-| Reconnection | Load snapshot, stream missed events `fromSeq` → now; gapless sequences make catch-up exact | n/a (single device); the `fromSeq` subscription already exists |
-| Turn & auction deadlines | Server-enforced `DeadlinePolicy` — auto-pass on expiry, void-bid on disqualification | none in code; the UI timer is cosmetic and the engine is wall-clock-free by design |
-| Async-bid void-and-reopen | A high bidder who becomes ineligible (timeout) is voided; the auction continues without them; with no bids remaining it closes unsold | impossible in Phase 1 (no payment can occur while an auction is open, so a winning bid is always payable) |
-| AI substitution | `AutoPlayerStrategy` fills disconnected seats | interface stub not implemented (documented, spec §10) |
-| Spectator projections | `projectPublicState(state, viewerId)` redacts server secrets and private info | identity in hot-seat (all state is on one trusted device) |
+| Contract | Phase 2 shape | Phase 1 status | Phase 2 status |
+|---|---|---|---|
+| Reconnection | Load snapshot, stream missed events `fromSeq` → now; gapless sequences make catch-up exact | n/a (single device); the `fromSeq` subscription already exists | **Implemented** (PR 15): token re-auth + snapshot + catch-up from the last seen sequence |
+| Turn & auction deadlines | Server-enforced `DeadlinePolicy` — auto-pass on expiry, void-bid on disqualification | none in code; the UI timer is cosmetic and the engine is wall-clock-free by design | **Implemented** (PR 17): `server/game/deadlines.ts` arms per-mode windows and submits ordinary, ledgered `server-auto-…` commands through the per-game queue (`tests/server/deadlines.test.ts`); the engine stays wall-clock-free — no `Date.now()` entered the reducer |
+| Async-bid void-and-reopen | A high bidder who becomes ineligible (timeout) is voided; the auction continues without them; with no bids remaining it closes unsold | impossible in Phase 1 (no payment can occur while an auction is open, so a winning bid is always payable) | **Implemented** (PR 17): the additive `VOID_BID` command (bank-acted) + `AUCTION_BID_VOIDED` event void a timed-out high bid — bidding restarts at the opening minimum, and with no eligible bidders left the sale closes unsold via the existing end path (`tests/game/void-bid.test.ts`) |
+| AI substitution | `AutoPlayerStrategy` fills disconnected seats | interface stub not implemented (documented, spec §10) | Not yet — specified-only |
+| Spectator projections | `projectPublicState(state, viewerId)` redacts server secrets and private info | identity in hot-seat (all state is on one trusted device) | Not yet — specified-only (player-facing redaction ships first) |
 
 ## 4. The public/private boundary
 
