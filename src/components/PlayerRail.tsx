@@ -1,4 +1,4 @@
-import type { GameState } from '@/lib/game/types';
+import type { ClientGameState } from '@/lib/game/transport/clientState';
 import { netWorthFromState } from '@/lib/game/rules-v1';
 import { PLAYER_COLORS, playerColor } from '@/lib/game/ui/uiPlayer';
 
@@ -8,7 +8,7 @@ import { PLAYER_COLORS, playerColor } from '@/lib/game/ui/uiPlayer';
  * Net worth is the §9 canonical function, never a UI recomputation.
  */
 
-export function PlayerRail({ state }: { state: GameState }) {
+export function PlayerRail({ state }: { state: ClientGameState }) {
   const seatOf = new Map(state.players.map((p, i) => [p.id, i]));
   const ownedCount = new Map<string, number>();
   for (const owner of Object.values(state.owners)) {

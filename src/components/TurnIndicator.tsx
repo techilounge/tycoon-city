@@ -1,6 +1,6 @@
 'use client';
 
-import type { GameState } from '@/lib/game/types';
+import type { ClientGameState } from '@/lib/game/transport/clientState';
 import { playerColor } from '@/lib/game/ui/uiPlayer';
 import { turnHeadline } from '@/lib/game/ui/actionDock';
 import { MODES } from '@/lib/game/board-v1';
@@ -23,7 +23,7 @@ export function TurnIndicator({
   dice,
   diceKey,
 }: {
-  state: GameState;
+  state: ClientGameState;
   seat: number;
   dice: DiceDisplay | null;
   diceKey: number;

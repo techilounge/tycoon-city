@@ -19,7 +19,8 @@
  */
 import type { AnyGameEvent } from '../events';
 import { EVENT_DECK_CATALOG, type EventCardEffect } from '../board-v1';
-import type { CreditorId, GameState, PlayerId, SpaceId } from '../types';
+import type { CreditorId, PlayerId, SpaceId } from '../types';
+import type { ClientGameState } from '../transport/clientState';
 
 export type ModalPlan =
   | { readonly kind: 'NONE' }
@@ -47,7 +48,7 @@ export interface ModalUiState {
   readonly victoryUnacknowledged: boolean;
 }
 
-export function modalPlan(state: GameState, ui: ModalUiState): ModalPlan {
+export function modalPlan(state: ClientGameState, ui: ModalUiState): ModalPlan {
   if (state.phase !== 'PLAYING') return state.phase === 'GAME_OVER' && ui.victoryUnacknowledged ? { kind: 'VICTORY' } : { kind: 'NONE' };
   if (state.auction !== null) return { kind: 'AUCTION' };
   if (state.debt !== null) return { kind: 'DEBT' };

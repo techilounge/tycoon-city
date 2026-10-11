@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import type { GameState, PlayerId } from '@/lib/game/types';
+import type { PlayerId } from '@/lib/game/types';
+import type { ClientGameState } from '@/lib/game/transport/clientState';
 import { tradePanel } from '@/lib/game/ui/actionDock';
 import {
   buildTradeOffer,
@@ -34,7 +35,7 @@ export function TradeReviewModal({
   onCounter,
   onClose,
 }: {
-  state: GameState;
+  state: ClientGameState;
   pending: boolean;
   onSubmit: Submit;
   onCounter: () => void;
@@ -94,7 +95,7 @@ export function TradeComposerModal({
   counterOf,
   onClose,
 }: {
-  state: GameState;
+  state: ClientGameState;
   pending: boolean;
   onSubmit: Submit;
   counterOf: string | null;
@@ -219,7 +220,7 @@ function TradeSide({
   onCash,
   onToggle,
 }: {
-  state: GameState;
+  state: ClientGameState;
   label: string;
   side: TradeSideKey;
   builder: TradeBuilderState;

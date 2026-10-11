@@ -5,7 +5,8 @@
  */
 import { BOARD_SPACES, isPurchasable, type BoardSpace } from '../board-v1';
 import type { AnyGameEvent } from '../events';
-import type { GameState, PlayerId, SpaceId } from '../types';
+import type { PlayerId, SpaceId } from '../types';
+import type { ClientGameState } from '../transport/clientState';
 
 /** One restrained color per seat order — presentation-only, never game state. */
 export const PLAYER_COLORS = ['#39b8a4', '#d8b86b', '#7fb1d8', '#c98bb0', '#8fd17f', '#d8a06b'] as const;
@@ -21,7 +22,7 @@ export interface BuyOffer {
 }
 
 /** The purchasable space the active player faces in BUY_DECISION, if any. */
-export function buyOffer(state: GameState): BuyOffer | null {
+export function buyOffer(state: ClientGameState): BuyOffer | null {
   if (state.phase !== 'PLAYING' || state.turnPhase !== 'BUY_DECISION') return null;
   const player = state.players.find((p) => p.id === state.activePlayerId);
   if (!player) return null;
@@ -73,7 +74,7 @@ export interface TileCaption {
  * reads "<price> · Owned by <player>" — ownership is never tooltip-only, and
  * the list price never visually disappears behind an ownership cue.
  */
-export function tileCaption(space: BoardSpace, state: GameState): TileCaption {
+export function tileCaption(space: BoardSpace, state: ClientGameState): TileCaption {
   if (!isPurchasable(space)) return { label: space.kind, ownerLine: null, ownerId: null };
   const price = '$' + space.listPrice;
   const ownerId = state.owners[space.id] ?? null;
