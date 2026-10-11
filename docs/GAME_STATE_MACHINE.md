@@ -1,8 +1,8 @@
-# Tycoon City — Game State Machine (Phase 1, final)
+# Tycoon City — Game State Machine
 
 **Status:** final · **Rules:** v1 · **Snapshot schema:** v2 ·
 Verified against the reducer on `main` (`engine/reducer.ts` and its surface
-modules) as of the Phase 1 docs wrap-up. This document is the source of truth
+modules) as of the Phase 2 docs wrap-up (base `3e31525`). This document is the source of truth
 for **state truth** — phases, transitions, the command registry, the event
 catalog, debt/bankruptcy, and snapshot history. Rules values live in
 `docs/RULES.md`; transport in `docs/MULTIPLAYER_CONTRACT.md`.
@@ -60,10 +60,10 @@ reducer checks this before authorization.
 - `processedCommandIds` — the idempotency ledger (ids only).
 - `mode`, `seed`, `gameId`, `victory`, `logs[]` (capped ring).
 
-## 3. Command registry (17 commands)
+## 3. Command registry (18 commands)
 
-Shape validation rejects any other type. `HANDLERS` covers all 17 — no
-`COMMAND_NOT_IMPLEMENTED` stubs remain in Phase 1.
+Shape validation rejects any other type. `HANDLERS` covers all 18 — no
+`COMMAND_NOT_IMPLEMENTED` stubs remain.
 
 | Command | Actor | Turn phase | Effect summary |
 |---|---|---|---|
@@ -75,6 +75,7 @@ Shape validation rejects any other type. `HANDLERS` covers all 17 — no
 | `PASS_TO_AUCTION` | active | BUY_DECISION | Opens a `DECLINED` auction. |
 | `BID` | eligible bidder | AUCTION · ELIMINATION_AUCTIONS | Ascending cash-backed bid (+$10 steps, ≤ cash). |
 | `PASS_BID` | eligible bidder | AUCTION · ELIMINATION_AUCTIONS | Binding pass; may resolve the auction. |
+| `VOID_BID` | the bank (deadline-composed) | AUCTION · ELIMINATION_AUCTIONS | Deadline void of the standing high bid (contract §3 row 3): the bidder is **out** — recorded as a binding pass, so they cannot re-bid and re-arm the window; bids are never escrowed, so no money moves and the event records the released pledge. Bidding restarts at the opening minimum; a void that leaves no unpassed player closes the sale unsold via the existing end path. A player-claimed `VOID_BID` never authorizes — the actor is always `BANK_ID`. |
 | `BUILD` | active | TURN_MANAGEMENT | +1 level (≤ landmark) on a complete-district space. |
 | `SELL_UPGRADE` | active or debtor | TURN_MANAGEMENT · SETTLING_DEBT | −1 level; +50% of the price paid for that level. |
 | `MORTGAGE` | active or debtor | TURN_MANAGEMENT · SETTLING_DEBT | +50% of list price; level 0 required; no rent while mortgaged. |
@@ -97,18 +98,19 @@ Shape validation rejects any other type. `HANDLERS` covers all 17 — no
 | 6 | BUY_DECISION | PASS_TO_AUCTION | active | — | `AUCTION_OPENED` (reason `DECLINED`) | AUCTION |
 | 7 | AUCTION | BID | eligible bidder | amount = current + $10k, ≤ cash | `AUCTION_BID` | AUCTION, or immediate resolution when one unpassed bidder remains |
 | 8 | AUCTION | PASS_BID | eligible bidder | — | `AUCTION_PASS` (binding); may resolve per the auction rules | AUCTION · TURN_MANAGEMENT |
-| 9 | TURN_MANAGEMENT | BUILD / SELL_UPGRADE / MORTGAGE / UNMORTGAGE | active | legality per `docs/RULES.md` | `UPGRADE_BUILT` / `UPGRADE_SOLD` / `MORTGAGE_TAKEN` / `MORTGAGE_LIFTED` | TURN_MANAGEMENT |
-| 10 | TURN_MANAGEMENT | OFFER_TRADE / ANSWER_TRADE | proposer / recipient | §3 registry guards | `TRADE_OFFERED` / `TRADE_ANSWERED` (accept/reject/counter) | TURN_MANAGEMENT |
-| 11 | TURN_MANAGEMENT | SURRENDER | active | none (voluntary) | the bankruptcy waterfall (§7) | elimination handling |
-| 12 | TURN_MANAGEMENT | END_TURN | active | — | pending offer expiry (`TRADE_EXPIRED`); victory check; **doubles re-roll** (counter < 3 → same player) | AWAITING_ROLL (same or next player) · GAME_OVER |
-| 13 | SETTLING_DEBT | SELL_UPGRADE / MORTGAGE | debtor | raises cash | liquidation events (unilateral, no consent) | SETTLING_DEBT until cash ≥ due |
-| 14 | SETTLING_DEBT | OFFER_TRADE / ANSWER_TRADE | debtor proposes; anyone answers | consented by acceptance | ordinary trade events | SETTLING_DEBT |
-| 15 | SETTLING_DEBT | SETTLE_DEBT | debtor | cash ≥ due | one atomic payment; `DEBT_SETTLED` | TURN_MANAGEMENT |
-| 16 | SETTLING_DEBT | SURRENDER | debtor | optional; **mandatory when hopeless** (`DEBT_HOPELESS` rejects all else) | the waterfall (§7) | elimination handling |
-| 17 | ELIMINATION_AUCTIONS | BID / PASS_BID | eligible bidders | reason `BANK_ESTATE` | per-property sequential auctions; unsold → bank unowned | after the last property: victory check, then the interrupted turn resumes at TURN_MANAGEMENT |
-| 18 | any PLAYING | *(system)* | system | elimination or end condition | `VICTORY_DECIDED` / `GAME_ENDED` | GAME_OVER — all commands reject with `GAME_IS_OVER` |
+| 9 | AUCTION · ELIMINATION_AUCTIONS | VOID_BID | the bank (deadline-composed) | bid window expired on a standing bid; payload names the open auction | `AUCTION_BID_VOIDED` (records the released pledge — no money moves); the voided bidder is out (binding) | AUCTION (bidding restarts at the opening minimum) · TURN_MANAGEMENT (a void leaving no unpassed player closes unsold) |
+| 10 | TURN_MANAGEMENT | BUILD / SELL_UPGRADE / MORTGAGE / UNMORTGAGE | active | legality per `docs/RULES.md` | `UPGRADE_BUILT` / `UPGRADE_SOLD` / `MORTGAGE_TAKEN` / `MORTGAGE_LIFTED` | TURN_MANAGEMENT |
+| 11 | TURN_MANAGEMENT | OFFER_TRADE / ANSWER_TRADE | proposer / recipient | §3 registry guards | `TRADE_OFFERED` / `TRADE_ANSWERED` (accept/reject/counter) | TURN_MANAGEMENT |
+| 12 | TURN_MANAGEMENT | SURRENDER | active | none (voluntary) | the bankruptcy waterfall (§7) | elimination handling |
+| 13 | TURN_MANAGEMENT | END_TURN | active | — | pending offer expiry (`TRADE_EXPIRED`); victory check; **doubles re-roll** (counter < 3 → same player) | AWAITING_ROLL (same or next player) · GAME_OVER |
+| 14 | SETTLING_DEBT | SELL_UPGRADE / MORTGAGE | debtor | raises cash | liquidation events (unilateral, no consent) | SETTLING_DEBT until cash ≥ due |
+| 15 | SETTLING_DEBT | OFFER_TRADE / ANSWER_TRADE | debtor proposes; anyone answers | consented by acceptance | ordinary trade events | SETTLING_DEBT |
+| 16 | SETTLING_DEBT | SETTLE_DEBT | debtor | cash ≥ due | one atomic payment; `DEBT_SETTLED` | TURN_MANAGEMENT |
+| 17 | SETTLING_DEBT | SURRENDER | debtor | optional; **mandatory when hopeless** (`DEBT_HOPELESS` rejects all else) | the waterfall (§7) | elimination handling |
+| 18 | ELIMINATION_AUCTIONS | BID / PASS_BID | eligible bidders | reason `BANK_ESTATE` | per-property sequential auctions; unsold → bank unowned | after the last property: victory check, then the interrupted turn resumes at TURN_MANAGEMENT |
+| 19 | any PLAYING | *(system)* | system | elimination or end condition | `VICTORY_DECIDED` / `GAME_ENDED` | GAME_OVER — all commands reject with `GAME_IS_OVER` |
 
-**Doubles semantics:** doubles grant exactly one extra cycle (row 12); the
+**Doubles semantics:** doubles grant exactly one extra cycle (row 13); the
 counter resets on any non-doubles roll, on the third-doubles penalty, and when
 the turn passes. There is no unlimited re-roll chain.
 
@@ -121,7 +123,7 @@ proposer's turn next ends (`turnAnchor` comparison — state-only, no timers) or
 when a participant is eliminated/bankrupt (`TRADE_CANCELLED`). A counteroffer
 replaces the pending offer and re-anchors expiry to the new proposer.
 
-## 5. Event catalog (35 types)
+## 5. Event catalog (36 types)
 
 Stamps: every event carries a gapless per-game `sequence`, the composite
 `eventId = <gameId>-e<sequence>`, the producing `commandId`, and the current
@@ -135,14 +137,16 @@ never raw PRNG words.
 | Ownership & money | `PROPERTY_PURCHASED`, `RENT_PAID`, `TAX_PAID`, `SERVICE_CHARGED` |
 | Event deck | `CARD_DRAWN`, `CARD_EFFECT_APPLIED`, `TOKEN_CONSUMED` |
 | Development | `UPGRADE_BUILT`, `UPGRADE_SOLD`, `MORTGAGE_TAKEN`, `MORTGAGE_LIFTED` |
-| Auctions | `AUCTION_OPENED`, `AUCTION_BID`, `AUCTION_PASS`, `AUCTION_RESOLVED`, `AUCTION_CLOSED_UNSOLD` |
+| Auctions | `AUCTION_OPENED`, `AUCTION_BID`, `AUCTION_PASS`, `AUCTION_BID_VOIDED`, `AUCTION_RESOLVED`, `AUCTION_CLOSED_UNSOLD` |
 | Trading | `TRADE_OFFERED`, `TRADE_ANSWERED`, `TRADE_EXPIRED`, `TRADE_CANCELLED` |
 | Debt & bankruptcy | `DEBT_ENTERED`, `DEBT_SETTLED`, `PLAYER_BANKRUPT`, `ASSETS_TRANSFERRED`, `PLAYER_ELIMINATED` |
 
 Commands map many-to-many: `ROLL` may emit dice/move/bonus/rent/tax/card
 events plus `DEBT_ENTERED`; `END_TURN` may emit `TURN_ENDED` +
 `VICTORY_DECIDED` + `GAME_ENDED`; a skipped turn emits `TURN_SKIPPED` +
-`TURN_ENDED`.
+`TURN_ENDED`; the bank's deadline `VOID_BID` emits `AUCTION_BID_VOIDED`,
+and a void that empties the auction adds `AUCTION_CLOSED_UNSOLD`
+(§4 row 9).
 
 ## 6. The §17.2 structural pin — settleable debt never emits bankruptcy
 

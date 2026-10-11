@@ -1,13 +1,14 @@
-# Tycoon City — Phase 1 Originality Audit
+# Tycoon City — Originality Audit
 
-**Status:** final · **Run:** 2026-10-10 against the docs-wrap-up tree (base
-`fc84844` + the four documentation commits) · **Scope:** every board space
-name, district, card title, card body, token, mode name, and UI label in the
-repository — plus all engine, tool, test, and documentation text.
+**Status:** final · **Run:** 2026-10-11 against the Phase 2 docs-wrap-up
+tree (base `3e31525`) · **Scope:** every board space name, district, card
+title, card body, token, mode name, and UI label in the repository — plus
+all engine, server, tool, test, and documentation text.
 
 **Verdict: CLEAN — no board or card string in the repository derives from any
 protected property-trading game.** All work is original to Tycoon City, per
-`AGENTS.md` rule 5 and the approved Phase 1 specification.
+`AGENTS.md` rule 5 and the approved Phase 1 specification; the Phase 2
+multiplayer surface re-swept clean in §4 item 5.
 
 ## 1. Standing protection (CI-enforced, every run)
 
@@ -79,3 +80,17 @@ fragments) matched **nothing** in any board, card, rules, or UI string.
    green in the full suite, and the extended genre-phrase list was re-grepped
    over `server/game/`, the wire protocol, and both new test files: no
    matches.
+5. **Phase 2 re-run (2026-10-11, PR 19, base `3e31525`): CLEAN.** The
+   multiplayer surface added new strings — room codes and the online lobby
+   copy, connection-state copy (`ConnectionBadge`, `RoomPanel`, wire-fault
+   toasts), deadline labels (`DeadlineBar`), the socket protocol names, and
+   the server/transport identifiers. A substring sweep of the 31 CI terms
+   plus a genre-phrase extension (token/character names, avenue and street
+   names, card phrases) over all 129 TypeScript, TSX, and Markdown files
+   under `src/`, `server/`, `tools/`, `tests/`, and `docs/` matched only the
+   §2 classes: the banned-list definition itself, the policy/disclaimer
+   sentences, the "buy/bid chance" simulation methodology, and substring
+   noise ("Brasshouse Court" for `house`). `mortgage` (the §8 lien
+   mechanic) is generic financial English, not a source-game coinage. The
+   CI banned-term sweep runs green in the full suite at this head
+   (530/530 tests).
