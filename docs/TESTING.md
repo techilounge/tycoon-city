@@ -22,6 +22,7 @@ npm run sim -- --seeds=20     # simulation smoke matrix (CI-enforced)
 | `tests/game/*.test.ts` | Engine contracts: envelopes, idempotency, version conflicts, replay-hash equality, movement, economy, auctions, trades, development, bankruptcy, victory |
 | `tests/game/ui-*.test.ts` | UI-adjacent pure logic: legal-command derivation (action dock), board layout, modal priority, save/resume persistence, presentation rules, trade composition |
 | `tests/sim/harness.test.ts` | Balance-simulation harness: strategy profile contracts, seed derivation, a full micro-matrix with all §17.3 demonstration assertions, rerun determinism |
+| `tests/server/*.test.ts` | The networked server (PR 14–16): SQLite persistence, the wire gateway, authoritative rooms, redaction, rate limits, conformance probes, durability across restarts, and the deadline matrix (`deadlines.test.ts` — expiry paths, queue races, resume, broadcast) |
 | `tools/sim/**` | The harness itself (`npm run sim`) — not imported by the app |
 
 ## The multiplayer-contract demonstration (spec §17.3)
@@ -60,6 +61,31 @@ Blitz} × {2, 3, 4, 6} matrix at 20 seeds per cell (240 complete games,
 roughly 30 s), each game ending with a replay-hash check. This keeps the
 demonstration and the engine's determinism under continuous regression
 pressure without the cost of the full 500-seed matrix.
+
+## Deadline enforcement (PR 16)
+
+Deadlines are server timers that act like players: on expiry the host
+submits an **ordinary command** through the same per-game queue as player
+commands (`server/game/deadlines.ts`), so every deadline action crosses the
+identical 8-step pipeline, lands in the durable ledger, and replays. The
+matrix in `tests/server/deadlines.test.ts` covers four layers:
+
+1. **Pure composition** — each decision phase maps to its timeout command
+   with the expired player (or the bank, for `VOID_BID`) stamped as the
+   actor; quiet states compose nothing.
+2. **The scheduler under fake timers** — fires at the window boundary,
+   one-shot only, and re-arms a full fresh window after every applied
+   command and on resume.
+3. **GameHost integration through SQLite** — all three expiry paths apply
+   and ledger as `server-auto-…` commands; a bidless-auction expiry passes
+   bindingly until the sale closes unsold; a resumed host re-arms from the
+   snapshot and acts.
+4. **Queue races** — an expiry queued first applies (a later player command
+   gets `VERSION_CONFLICT`); a player command queued first refreshes its
+   window and the stale expiry is dropped. The engine itself is never
+   touched by the clock: `tests/game/void-bid.test.ts` pins the additive
+   `VOID_BID` behavior (void → auction continues; no eligible bidders →
+   unsold close; replay covers deadline commands) with fake timers only.
 
 ## Determinism and reproducibility
 

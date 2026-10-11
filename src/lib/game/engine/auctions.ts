@@ -49,6 +49,7 @@ export type AuctionEventInput =
   | EventInput<'AUCTION_OPENED'>
   | EventInput<'AUCTION_BID'>
   | EventInput<'AUCTION_PASS'>
+  | EventInput<'AUCTION_BID_VOIDED'>
   | EventInput<'AUCTION_RESOLVED'>
   | EventInput<'AUCTION_CLOSED_UNSOLD'>
   | EventInput<'PROPERTY_PURCHASED'>;
@@ -123,6 +124,34 @@ export function requireOpenAuctionRef(
 /** Players still in the auction: eligible, never passed (spec §5). */
 export function unpassedPlayers(auction: AuctionState): readonly PlayerId[] {
   return auction.eligiblePlayerIds.filter((id) => !auction.passedPlayerIds.includes(id));
+}
+
+/**
+ * The open auction a VOID_BID names: an auction must be open on either
+ * deadline-governed surface (a declined buy's AUCTION or a bank-creditor
+ * estate's ELIMINATION_AUCTIONS — the deadline does not know which surface
+ * opened the sale), the payload must name it, and a standing bid must exist
+ * to void. Same contract as requireOpenAuctionRef, widened to both surfaces.
+ */
+export function requireVoidableAuction(draft: GameStateDraft, command: GameCommand): AuctionState {
+  if (draft.auction === null || (draft.turnPhase !== 'AUCTION' && draft.turnPhase !== 'ELIMINATION_AUCTIONS')) {
+    throw new RuleError('INVALID_PHASE', `VOID_BID is only valid while an auction is open, not ${String(draft.turnPhase)}`, {
+      phase: draft.turnPhase,
+    });
+  }
+  const payload = payloadOf(command);
+  if (payload.auctionId !== draft.auction.auctionId) {
+    throw new RuleError('RULE_VIOLATION', `payload auctionId ${String(payload.auctionId)} does not match the open auction ${draft.auction.auctionId}`, {
+      auctionId: payload.auctionId ?? null,
+      openAuctionId: draft.auction.auctionId,
+    });
+  }
+  if (draft.auction.highBidderId === null) {
+    throw new RuleError('RULE_VIOLATION', `auction ${draft.auction.auctionId} has no standing bid to void`, {
+      auctionId: draft.auction.auctionId,
+    });
+  }
+  return draft.auction;
 }
 
 /**
@@ -284,6 +313,57 @@ export function applyAuctionPass(
   const next: AuctionState = { ...auction, passedPlayerIds: [...auction.passedPlayerIds, command.actorId] };
   draft.auction = next;
   return next;
+}
+
+/**
+ * Deadline void (contract §3 row 3 — Phase 2's only engine addition): the
+ * standing high bid is voided and the bidder is OUT of the auction — recorded
+ * in passedPlayerIds, binding like a pass, so they cannot simply re-bid and
+ * re-arm the timer. Bids are cash-backed but never escrowed — cash moves only
+ * inside resolveAuctionToWinner — so the void releases a pledge, and the
+ * event's amount records that released pledge without moving money. The next
+ * legal bid restarts from the opening minimum: a voided bid is as if never
+ * made.
+ */
+export function applyAuctionVoid(
+  draft: GameStateDraft,
+  auction: AuctionState,
+  events: AnyEventInput[],
+): AuctionState {
+  if (auction.highBidderId === null || auction.currentBid === null) {
+    // requireVoidableAuction has proven a standing bid exists; a miss here is
+    // an engine bug, never a silent no-op.
+    throw new Error(`engine bug: auction void without a standing bid (auction ${auction.auctionId})`);
+  }
+  const voidedBidderId = auction.highBidderId;
+  const amount = auction.currentBid;
+  events.push({ type: 'AUCTION_BID_VOIDED', payload: { auctionId: auction.auctionId, bidderId: voidedBidderId, amount } });
+  const next: AuctionState = {
+    ...auction,
+    currentBid: null,
+    highBidderId: null,
+    passedPlayerIds: [...auction.passedPlayerIds, voidedBidderId],
+  };
+  draft.auction = next;
+  return next;
+}
+
+/**
+ * Deadline void on a declined-buy auction: when the void leaves no unpassed
+ * player the sale closes unsold and the decliner's turn resumes at
+ * TURN_MANAGEMENT (the existing end path); otherwise the auction stays open —
+ * one unpassed player with no standing bid opens the only bid or passes,
+ * two or more keep bidding (spec §5).
+ */
+export function voidBidHandler(draft: GameStateDraft, command: GameCommand): AuctionEventInput[] {
+  const auction = requireVoidableAuction(draft, command);
+  const events: AuctionEventInput[] = [];
+  const next = applyAuctionVoid(draft, auction, events);
+  if (unpassedPlayers(next).length === 0) {
+    closeAuctionUnsold(draft, next, events);
+    draft.turnPhase = 'TURN_MANAGEMENT';
+  }
+  return events;
 }
 
 /**

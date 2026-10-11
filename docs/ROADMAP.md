@@ -26,9 +26,19 @@ Original board/rules, complete property/rent/tax/event/auction/trade/upgrade/ban
 
 All Phase 1 gameplay is local hot-seat on the deterministic engine: 2–6 players, a 32-space board, six districts, 18 event cards, Classic/Quick/Blitz modes.
 
-## Phase 2 — Real multiplayer (next)
+## Phase 2 — Real multiplayer (in progress)
 
-Dedicated Node WebSocket/Socket.IO server, authoritative commands, room join/create, guest identity, secure random rolls, persistence, reconnect, idempotency, concurrency tests and rate limits. Do not ship public multiplayer until these pass. The Phase 2 seams are already specified: `docs/MULTIPLAYER_CONTRACT.md` lists the contracts that are running code (demonstrated over complete games) versus documented-only, and `docs/ARCHITECTURE.md` §10 names what must not break.
+Dedicated Node WebSocket/Socket.IO server, authoritative commands, room join/create, guest identity, secure random rolls, persistence, reconnect, idempotency, concurrency tests and rate limits. Do not ship public multiplayer until these pass. The Phase 2 seams are already specified: `docs/MULTIPLAYER_CONTRACT.md` lists the contracts that are running code (demonstrated over complete games) versus documented-only, and `docs/ARCHITECTURE.md` §10–§11 name what must not break and how deadlines act.
+
+Delivered so far:
+
+| PRs | Delivered |
+|---|---|
+| #14 | One-port custom server: Socket.IO + SQLite (games, event log, sessions) with rate limits |
+| #15 | Authoritative game service: rooms, session tokens, redacted broadcasts, reconnect catch-up, durable command ledger |
+| #16 (this PR) | Server-enforced deadlines — per-mode turn windows and the auction bid window, expiry actions submitted as ordinary ledgered commands through the per-game queue; the additive bank-acted `VOID_BID` command + `AUCTION_BID_VOIDED` event (§3 rows moved to implemented) |
+
+Still open in Phase 2: the client online-mode experience (transport factory, room panel, DeadlineBar), AI substitution, and spectator projections.
 
 ## Phase 3 — Social and polish
 

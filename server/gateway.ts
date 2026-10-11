@@ -130,6 +130,7 @@ export function setupGateway(io: Server, db: TycoonDb, options: GatewayOptions =
         // full event history (at create: the seq-1 GAME_CREATED event) — the
         // creator's stream is gapless from the very first event.
         socket.emit(SOCKET_EVENTS.state, created.host.clientState);
+        socket.emit(SOCKET_EVENTS.deadline, created.host.deadlineBroadcast);
         for (const event of db.getEvents(created.host.gameId, 1)) {
           socket.emit(SOCKET_EVENTS.event, event);
         }
@@ -233,6 +234,8 @@ export function setupGateway(io: Server, db: TycoonDb, options: GatewayOptions =
       // live broadcasts ordered behind the catch-up.
       socket.emit(SOCKET_EVENTS.state, gameHost.clientState);
       for (const event of prepared.catchUpEvents) socket.emit(SOCKET_EVENTS.event, event);
+      // The joiner's DeadlineBar starts consistent with the server's windows.
+      socket.emit(SOCKET_EVENTS.deadline, gameHost.deadlineBroadcast);
       if (!prepared.reconnected) {
         const roster = sessionRoster(db, row.gameId, gameHost);
         io.to(gameRoomOf(row.gameId)).emit(SOCKET_EVENTS.joined, broadcastOf(row.roomCode, gameHost, prepared.session, roster));

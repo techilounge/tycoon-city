@@ -39,9 +39,11 @@ import { BANK_ID } from '../types';
 import {
   applyAuctionBid,
   applyAuctionPass,
+  applyAuctionVoid,
   auctionIdFor,
   closeAuctionUnsold,
   requireOpenAuctionRef,
+  requireVoidableAuction,
   resolveAuctionToWinner,
   unpassedPlayers,
 } from './auctions';
@@ -399,6 +401,22 @@ export function estatePassBidHandler(draft: GameStateDraft, command: GameCommand
     // bid keeps the auction open: they bid the opening minimum or pass (§5).
     resolveAuctionToWinner(draft, next, remaining[0], events);
   }
+  settleEstateStep(draft, events);
+  return events;
+}
+
+/**
+ * Deadline void in a bank-creditor estate auction (contract §3 row 3): the
+ * standing high bid is voided — binding for that bidder — and when no
+ * unpassed bidder remains the sale closes unsold; settleEstateStep then opens
+ * the estate's next space (or ends the sale). While bidders remain, the
+ * estate auction stays open exactly like a declined-buy one.
+ */
+export function estateVoidBidHandler(draft: GameStateDraft, command: GameCommand): AnyEventInput[] {
+  const auction = requireVoidableAuction(draft, command);
+  const events: AnyEventInput[] = [];
+  const next = applyAuctionVoid(draft, auction, events);
+  if (unpassedPlayers(next).length === 0) closeAuctionUnsold(draft, next, events);
   settleEstateStep(draft, events);
   return events;
 }

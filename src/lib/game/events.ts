@@ -100,6 +100,11 @@ export interface EventPayloadMap {
   readonly AUCTION_OPENED: { readonly auctionId: string; readonly spaceId: SpaceId; readonly reason: AuctionOpenReason };
   readonly AUCTION_BID: { readonly auctionId: string; readonly bidderId: PlayerId; readonly amount: number };
   readonly AUCTION_PASS: { readonly auctionId: string; readonly bidderId: PlayerId };
+  /** Deadline void (contract §3 row 3): the standing high bid is voided and
+   *  the bidder is out of the auction — their pledge is released. Bids are
+   *  cash-backed but never escrowed (cash moves only at settlement), so the
+   *  release moves no money; amount records the released pledge. */
+  readonly AUCTION_BID_VOIDED: { readonly auctionId: string; readonly bidderId: PlayerId; readonly amount: number };
   readonly AUCTION_RESOLVED: { readonly auctionId: string; readonly winnerId: PlayerId; readonly spaceId: SpaceId; readonly amount: number };
   readonly AUCTION_CLOSED_UNSOLD: { readonly auctionId: string; readonly spaceId: SpaceId };
   readonly TRADE_OFFERED: { readonly tradeId: string; readonly proposerId: PlayerId; readonly recipientId: PlayerId; readonly offer: TradeOffer };
@@ -142,6 +147,7 @@ const EVENT_TYPE_RECORD: { [T in EventType]: true } = {
   AUCTION_OPENED: true,
   AUCTION_BID: true,
   AUCTION_PASS: true,
+  AUCTION_BID_VOIDED: true,
   AUCTION_RESOLVED: true,
   AUCTION_CLOSED_UNSOLD: true,
   TRADE_OFFERED: true,
