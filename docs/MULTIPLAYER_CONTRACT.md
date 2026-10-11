@@ -1,13 +1,14 @@
-# Tycoon City — Multiplayer Contract (Phase 2 readiness)
+# Tycoon City — Multiplayer Contract
 
-**Status:** final for Phase 1 · Companion to spec §10.
+**Status:** implemented (Phase 2, PRs #14–#18) · Companion to spec §10.
 
-Phase 1 ships no networking. This document is the contract that makes Phase 2
-a **wiring change, not a contract change**: the guarantees a Phase 2
-server-authoritative system must preserve, which of them are already running
-code demonstrated over complete games, and which are documented-only until the
-server exists. The production WebSocket server itself is explicitly out of
-Phase 1 scope.
+Phase 1 shipped no networking; this document is the contract that made Phase 2
+a **wiring change, not a contract change** — and Phase 2 landed on it exactly
+that way (PRs #14–#18). It remains the statement of the guarantees the
+server-authoritative system must preserve, which of them are running code
+demonstrated over complete games, and which are documented-only deferrals.
+The §3 status column tracks the implementation; everything promised below is
+now enforced server-side except the two deferrals named there.
 
 ## 1. The load-bearing principle
 
@@ -28,8 +29,13 @@ interface CommandSink { submit(command: GameCommand): Promise<CommandResult>; }
 
 Phase 1: `LocalCommandSink` (`src/lib/game/engine/transport.ts`) calls
 `applyCommand` in-process, owns the state, the event log, and the stored
-events per `commandId`. Phase 2: a WebSocket RPC sink backed by the server —
-same interface, same `GameCommand` envelope, same `CommandResult` shapes.
+events per `commandId`. **Landed (Phase 2):** `NetworkCommandSink`
+(`src/lib/game/transport/networkSink.ts`) submits over Socket.IO
+(`game:command`) and the ack carries the server's `CommandResult` verbatim —
+same interface, same `GameCommand` envelope, same `CommandResult` shapes;
+`createCommandSink` (`transport/createCommandSink.ts`) selects the local sink
+for hot-seat and the network sink for online, so both modes share exactly one
+command path in the game page.
 
 ### 2.2 Actor authorization — `canAct`
 
@@ -80,8 +86,12 @@ interface EventSource {
 Sequences are monotonic and gapless per game; `eventId` is the composite
 `<gameId>-e<sequence>`, so replay reproduces the log byte-for-byte. Phase 1:
 `InMemoryEventLog`/`InMemoryEventSource` replay from the local log (catch-up
-first, then live listeners). Phase 2: server fan-out over WebSocket, same
-subscription shape.
+first, then live listeners). **Landed (Phase 2):** the gateway fans out
+`game:event` to the room in stamped order and streams the durable log from
+`fromSeq` on join/reconnect (`server/gateway.ts`); the online client
+(`transport/onlineClient.ts`) tracks the last seen sequence and drives
+catch-up, with `SocketEventSource` (`transport/networkSink.ts`) guarding
+against gapped streams (`EVENT_GAP`).
 
 ### 2.6 Snapshots — `SnapshotStore`
 
@@ -94,7 +104,9 @@ interface SnapshotStore {
 
 Phase 1: in-memory store, with the UI's `LocalSnapshotStore` as the
 `localStorage` adapter (schema-validated, refusal on any unknown version).
-Phase 2: a server DB serving reconnection payloads — same interface.
+**Landed (Phase 2):** SQLite (`better-sqlite3`) serves reconnection payloads —
+`server/db.ts` persists a serialized snapshot with every applied command and
+serves it on join, same interface.
 
 ### 2.7 Replay — the state-hash contract
 
@@ -106,7 +118,11 @@ catch-up, and dispute audits possible without new engine code.
 
 **Demonstrated:** every completed simulated game refolds its full ordered log
 (probes included) from `{ seed, mode, players }` to the live final state hash
-(§17.3(d)) — 6,000/6,000 identical in the committed report.
+(§17.3(d)) — 6,000/6,000 identical in the committed report. **Landed
+(Phase 2):** replay remains a test-and-audit tool, not a runtime dependency —
+the server answers idempotent retries from the durable command ledger instead
+(`server/db.ts`), and the wire conformance suite refolds the ledger to the
+server's authoritative hash (`tests/server/conformance.test.ts`).
 
 ## 3. Phase 2 contracts — specified in Phase 1, implemented as Phase 2 lands
 
@@ -114,9 +130,12 @@ These were specified in Phase 1 so the Phase 2 design could not quietly break
 them. They were **not** in the Phase 1 codebase as runtime interfaces —
 deviating from the original "every interface ships as code in PR 2"
 expectation — because no local behavior could exercise them meaningfully. The
-status column tracks the Phase 2 implementation as it lands: the server
-foundation (PR 15) shipped reconnection, and the deadline rows shipped with
-PR 16; AI substitution and spectator projections remain specified-only.
+status column tracks the Phase 2 implementation: sessions shipped with the
+server foundation (PR 14) and reconnection catch-up with the authoritative
+game service (PR 15); the deadline rows shipped with PR 16; the online client
+transport with PR 17; and since PR 18 the §17.3 probe skeleton also runs
+**over the wire** against the real gateway (`tests/server/conformance.test.ts`).
+AI substitution and spectator projections remain specified-only.
 
 | Contract | Phase 2 shape | Phase 1 status | Phase 2 status |
 |---|---|---|---|
@@ -156,6 +175,10 @@ state — the whole point of hot-seat. In Phase 2 they become **server-private**
 7. Replay from `{ seed, ordered commands }` reproduces the state hash.
 8. The engine stays free of wall-clock, DOM, and ambient randomness.
 
+Every item is pinned by a test — one per item, over the wire where the
+guarantee is a server guarantee (`tests/server/contract-checklist.test.ts`,
+§5.1–§5.8).
+
 ## 6. Evidence
 
 The four demonstrated guarantees (§2.2–§2.5 above) are re-proven on every CI
@@ -163,4 +186,7 @@ run by the 20-seed-per-cell simulation smoke, and in full by the committed
 6,000-game report — see `docs/ECONOMY.md`
 ("Multiplayer-contract demonstration") and `docs/TESTING.md` ("The
 multiplayer-contract demonstration"), which reference the same evidence
-rather than restating it.
+rather than restating it. Since PR 18 they are re-proven **over the wire** on
+every CI run: a complete game driven through real sockets with probes
+(a)–(d) interleaved, plus the concurrency, reconnect, and
+restart-durability suites (`tests/server/`).
