@@ -23,8 +23,22 @@ export const SOCKET_EVENTS = {
   joined: 'game:joined',
   state: 'game:state',
   event: 'game:event',
+  deadline: 'game:deadline',
   error: 'game:error',
 } as const;
+
+/** Server → client `game:deadline` payload (Phase 2, contract §3): the
+ *  currently armed deadlines as absolute expiry timestamps on the server
+ *  clock. Presentation-only — the UI's DeadlineBar renders the countdown;
+ *  the server enforces the action when a window expires. A null field means
+ *  that deadline is not armed (lobby, game over, or no open auction). */
+export interface DeadlineBroadcast {
+  readonly gameId: string;
+  /** The turn-decision window (roll, buy decision, debt settlement, management). */
+  readonly turnExpiresAtMs: number | null;
+  /** The open auction's bid/pass window. */
+  readonly auctionExpiresAtMs: number | null;
+}
 
 /** Codes the gateway itself emits; engine rejections reuse the closed RuleErrorCode set. */
 export type GatewayErrorCode =
