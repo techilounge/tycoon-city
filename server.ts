@@ -6,11 +6,13 @@
  * serves the `next build` output.
  *
  * Run: `npm run dev` (development) · `npm start` (production, after `next build`).
- * Config: PORT (default 3000) · NODE_ENV=production for the prod build.
+ * Config: PORT (default 3000) · TYCOON_DB_PATH (default ./data/tycoon.db) ·
+ * NODE_ENV=production for the prod build.
  *
  * The machine-readable ready line on stdout is the boot contract for the
  * smoke test and tooling; do not remove it.
  */
+import { DEFAULT_DB_PATH } from './server/db';
 import { startServer } from './server/start';
 
 function envPort(): number {
@@ -25,8 +27,9 @@ function envPort(): number {
 
 const port = envPort();
 const dev = process.env.NODE_ENV !== 'production';
+const dbPath = process.env.TYCOON_DB_PATH ?? DEFAULT_DB_PATH;
 
-startServer({ port, dev })
+startServer({ port, dev, dbPath })
   .then((server) => {
     process.stdout.write(`${JSON.stringify({ event: 'ready', port: server.port, dev })}\n`);
 

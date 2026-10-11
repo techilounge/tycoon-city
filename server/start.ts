@@ -1,13 +1,14 @@
 /**
  * One Node process for everything (spec decision 1): the Next.js app and the
- * game sockets on a single HTTP port. Dev mode wraps the same compiler as
- * `next dev`; production serves the `next build` output. The SQLite
- * persistence layer attaches here in the next PR 14 layer.
+ * game sockets on a single HTTP port, with SQLite persistence opened before
+ * listen — a bad DB path fails fast, never half-boots. Dev mode wraps the
+ * same compiler as `next dev`; production serves the `next build` output.
  */
 import { createServer, type Server as HttpServer } from 'node:http';
 import path from 'node:path';
 import next from 'next';
 import { Server } from 'socket.io';
+import { TycoonDb } from './db';
 import { setupGateway } from './gateway';
 
 export interface StartServerOptions {
@@ -15,6 +16,8 @@ export interface StartServerOptions {
   readonly port: number;
   /** True wraps the next dev compiler; false serves the production build in .next. */
   readonly dev: boolean;
+  /** SQLite file path; defaults to ./data/tycoon.db (env override lives in server.ts). */
+  readonly dbPath?: string;
 }
 
 export interface RunningServer {
@@ -22,11 +25,13 @@ export interface RunningServer {
   readonly port: number;
   readonly io: Server;
   readonly httpServer: HttpServer;
-  /** Stops sockets and HTTP; safe to call once. */
+  readonly db: TycoonDb;
+  /** Stops sockets and HTTP and closes the database; safe to call once. */
   close(): Promise<void>;
 }
 
 export async function startServer(options: StartServerOptions): Promise<RunningServer> {
+  const db = TycoonDb.open(options.dbPath);
   const app = next({ dev: options.dev, dir: path.resolve(__dirname, '..') });
   await app.prepare();
   const handle = app.getRequestHandler();
@@ -40,7 +45,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     });
   });
   const io = new Server(httpServer);
-  setupGateway(io);
+  setupGateway(io, db);
 
   const port = await new Promise<number>((resolve, reject) => {
     httpServer.once('error', reject);
@@ -54,10 +59,17 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     port,
     io,
     httpServer,
+    db,
     close: () =>
       new Promise<void>((resolve) => {
         io.close(() => {
-          httpServer.close(() => resolve());
+          httpServer.close(() => {
+            try {
+              db.close();
+            } finally {
+              resolve();
+            }
+          });
         });
         // Force-close keep-alive sockets so test runners and SIGTERM exit promptly.
         httpServer.closeAllConnections?.();
