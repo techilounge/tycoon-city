@@ -49,7 +49,9 @@ export function RoomPanel({
   selfActorId: string | null;
 }) {
   const claimed = new Map(roster.map((entry) => [entry.actorId, entry]));
-  const seatIds = Array.from({ length: seatCount }, (_, i) => `P${i + 1}`);
+  // Seat ids match the server's `seatIdsFor` exactly — engine player ids are
+  // lowercase `p1`… (rooms.ts), and roster entries claim seats by that id.
+  const seatIds = Array.from({ length: seatCount }, (_, i) => `p${i + 1}`);
   return (
     <section className="panel p-4 sm:p-5" aria-label="Online room">
       <div className="flex flex-wrap items-center justify-between gap-3">

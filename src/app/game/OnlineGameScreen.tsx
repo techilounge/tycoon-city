@@ -124,14 +124,20 @@ export function OnlineGameScreen({ code }: { code: string }) {
     [code, buildCallbacks],
   );
 
-  // One connect attempt per mount; the session record (if any) re-authenticates.
-  // Cleanup closes the socket — StrictMode's double mount joins once net.
+  // One connect attempt per mount — ONLY when a stored session can re-auth.
+  // A session-less tab shows the fresh-join card: auto-joining with an empty
+  // name would just draw a server refusal. Cleanup closes the socket —
+  // StrictMode's double mount joins once net.
   useEffect(() => {
     let cancelled = false;
     const stored = loadSessionRecord(window.sessionStorage, code);
     void (async () => {
       if (cancelled) return;
-      await connectNow(stored?.name ?? '', stored);
+      if (stored === null) {
+        setScreen('join-card');
+        return;
+      }
+      await connectNow(stored.name, stored);
     })();
     return () => {
       cancelled = true;
