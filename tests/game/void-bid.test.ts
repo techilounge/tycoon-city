@@ -97,6 +97,7 @@ function craftedState(overrides: {
   activePlayerId?: PlayerId | null;
   turnPhase?: GameState['turnPhase'];
   owners?: Record<string, PlayerId>;
+  mortgaged?: Record<string, boolean>;
   debt?: GameState['debt'];
   estateSale?: GameState['estateSale'];
 } = {}): GameState {
@@ -109,7 +110,7 @@ function craftedState(overrides: {
     doublesCount: 0,
     owners: overrides.owners ?? {},
     upgrades: {},
-    mortgaged: {},
+    mortgaged: overrides.mortgaged ?? {},
     eventDeck: { drawPile: [], discardPile: [] },
     debt: overrides.debt ?? null,
     auction: null,
