@@ -12,6 +12,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { AnyGameEvent } from '../src/lib/game/events';
 import { validateEventEnvelope } from '../src/lib/game/events';
+import type { GameCommand } from '../src/lib/game/commands';
 import { parseSnapshot, serializeSnapshot, type GameSnapshot } from '../src/lib/game/snapshot-schema';
 import type { ModeId } from '../src/lib/game/board-v1';
 import type { GamePhase } from '../src/lib/game/types';
@@ -20,7 +21,8 @@ import { SESSION_TTL_MS, mintSessionToken } from './sessions';
 export const DEFAULT_DB_PATH = './data/tycoon.db';
 
 /** 6-character room codes from an unambiguous alphabet — no 0/O/1/I (spec decision 4). */
-const ROOM_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+/** Unambiguous room-code alphabet — no 0/O/1/I. Exported for test byte-source round-trips. */
+export const ROOM_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const ROOM_CODE_LENGTH = 6;
 const ROOM_CODE_ATTEMPTS = 16;
 
@@ -49,6 +51,7 @@ CREATE TABLE IF NOT EXISTS commands (
   actor_id TEXT NOT NULL,
   type TEXT NOT NULL,
   events TEXT NOT NULL,
+  command_json TEXT,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (game_id, command_id)
 );
@@ -98,6 +101,8 @@ export interface RecordAppliedInput {
   readonly commandId: string;
   readonly actorId: string;
   readonly commandType: string;
+  /** The full applied command — the audit/replay input (spec: replay is the audit tool). */
+  readonly command: GameCommand;
   readonly events: readonly AnyGameEvent[];
   readonly snapshot: GameSnapshot;
 }
@@ -132,6 +137,12 @@ export class TycoonDb {
     fs.mkdirSync(path.dirname(path.resolve(dbPath)), { recursive: true });
     const db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
+    // Migration: command_json was added after the first dev databases were
+    // created; ALTER TABLE covers old files (new rows always carry the payload).
+    const commandColumns = (db.pragma('table_info(commands)') as Array<{ name: string }>).map((c) => c.name);
+    if (commandColumns.length > 0 && !commandColumns.includes('command_json')) {
+      db.exec('ALTER TABLE commands ADD COLUMN command_json TEXT');
+    }
     db.exec(SCHEMA);
     return new TycoonDb(db);
   }
@@ -143,14 +154,16 @@ export class TycoonDb {
   /**
    * Mint a unique room code, backed by the UNIQUE constraint's collision
    * check. 31^6 ≈ 887M codes — the retry bound is unreachable in practice,
-   * and throwing loudly beats silently weakening the alphabet.
+   * and throwing loudly beats silently weakening the alphabet. The byte
+   * source is injectable so the collision-retry path is deterministically
+   * testable.
    */
-  newRoomCode(): string {
+  newRoomCode(bytes: (length: number) => Buffer = randomBytes): string {
     for (let attempt = 0; attempt < ROOM_CODE_ATTEMPTS; attempt++) {
-      const bytes = randomBytes(ROOM_CODE_LENGTH);
+      const raw = bytes(ROOM_CODE_LENGTH);
       let code = '';
       for (let i = 0; i < ROOM_CODE_LENGTH; i++) {
-        code += ROOM_CODE_ALPHABET[bytes[i] % ROOM_CODE_ALPHABET.length];
+        code += ROOM_CODE_ALPHABET[raw[i] % ROOM_CODE_ALPHABET.length];
       }
       const taken = this.db.prepare('SELECT 1 FROM games WHERE room_code = ?').get(code);
       if (taken === undefined) return code;
@@ -205,9 +218,17 @@ export class TycoonDb {
       this.insertEvents(input.gameId, input.events, now);
       this.db
         .prepare(
-          'INSERT INTO commands (game_id, command_id, actor_id, type, events, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          'INSERT INTO commands (game_id, command_id, actor_id, type, events, command_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         )
-        .run(input.gameId, input.commandId, input.actorId, input.commandType, JSON.stringify(input.events), now);
+        .run(
+          input.gameId,
+          input.commandId,
+          input.actorId,
+          input.commandType,
+          JSON.stringify(input.events),
+          JSON.stringify(input.command),
+          now,
+        );
       this.db
         .prepare('UPDATE games SET phase = ?, state_snapshot = ?, updated_at = ? WHERE game_id = ?')
         .run(input.snapshot.state.phase, serializeSnapshot(input.snapshot), now, input.gameId);
@@ -221,6 +242,21 @@ export class TycoonDb {
       .prepare('SELECT events FROM commands WHERE game_id = ? AND command_id = ?')
       .get(gameId, commandId) as { events: string } | undefined;
     return row ? this.parseEventBatch(row.events) : null;
+  }
+
+  /** Every applied command in application order — the replay/audit input (spec: replay is the audit tool). */
+  listAppliedCommands(gameId: string): GameCommand[] {
+    const rows = this.db
+      .prepare('SELECT command_json FROM commands WHERE game_id = ? ORDER BY rowid')
+      .all(gameId) as Array<{ command_json: string | null }>;
+    return rows.map((row, index) => {
+      if (row.command_json === null) {
+        throw new Error(
+          `game ${gameId} ledger row ${index + 1} has no command payload — created by an older build; delete the dev database to replay`,
+        );
+      }
+      return JSON.parse(row.command_json) as GameCommand;
+    });
   }
 
   /** All events of a game from `fromSeq` — the reconnection catch-up read (spec §3). */
@@ -277,6 +313,17 @@ export class TycoonDb {
 
   touchSession(token: string): void {
     this.db.prepare('UPDATE sessions SET last_seen_at = ? WHERE token = ?').run(Date.now(), token);
+  }
+
+  /**
+   * Every session row for a game, INCLUDING expired ones: a seat claim is
+   * permanent for the game's lifetime — an expired token loses authentication
+   * (getSession), never its seat. Ordering is by rowid (claim order). */
+  listSessionsForGame(gameId: string): SessionRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM sessions WHERE game_id = ? ORDER BY rowid')
+      .all(gameId) as SessionsRowSql[];
+    return rows.map(toSessionRow);
   }
 
   private insertEvents(gameId: string, events: readonly AnyGameEvent[], now: number): void {

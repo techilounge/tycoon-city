@@ -6,9 +6,9 @@
  * the game's room. Rejection purity holds over the wire: a rejected command
  * returns its typed error with the state hash untouched.
  *
- * Deliberately NOT here (Phase 2 PR 15): room lifecycle (create/join by
- * code), seat caps, and deadline enforcement — this class is the state core
- * they build on.
+ * Deliberately NOT here: room lifecycle (create/join by code, seat claims) —
+ * it lives in ./rooms and builds on this class via `runExclusive`, the same
+ * serialization boundary commands use.
  */
 import { randomBytes } from 'node:crypto';
 import type { Server } from 'socket.io';
@@ -18,11 +18,11 @@ import { applyCommand, createGame } from '../../src/lib/game/engine/reducer';
 import { rngForState } from '../../src/lib/game/rng';
 import { buildSnapshot } from '../../src/lib/game/snapshot-schema';
 import type { ModeId } from '../../src/lib/game/board-v1';
-import type { GameState } from '../../src/lib/game/types';
+import type { GamePhase, GameState } from '../../src/lib/game/types';
 import { gameRoomOf, toWireError, type WireCommandResult } from '../../src/lib/game/transport/protocol';
 import type { TycoonDb } from '../db';
 import { SubmitQueue } from './queue';
-import { projectClientState } from './redact';
+import { projectClientState, type ClientGameState } from './redact';
 
 /** The authenticated identity a command runs as — minted server-side, never claimed. */
 export interface SubmitSession {
@@ -82,13 +82,33 @@ export class GameHost {
     return new GameHost(db, io, snapshot.state);
   }
 
-  /**
-   * Queue a command from an authenticated session. Identity is stamped here,
+  /** Queue a command from an authenticated session. Identity is stamped here,
    * inside the serialization boundary: the session's binding wins and a
-   * client-claimed actorId/gameId are ignored (spec criterion 4).
-   */
+   * client-claimed actorId/gameId are ignored (spec criterion 4). */
   submit(session: SubmitSession, raw: unknown): Promise<WireCommandResult> {
     return this.queue.push(() => this.submitNow(session, raw));
+  }
+
+  /** Run a task inside the same per-game serialization boundary as commands —
+   *  the join/reconnect critical section (phase check + seat claim + catch-up
+   *  read + room admission) so it cannot interleave with an application. */
+  runExclusive<T>(task: () => T | Promise<T>): Promise<T> {
+    return this.queue.push(task);
+  }
+
+  /** The authoritative phase — the room-lifecycle gate reads this, not the DB row. */
+  get phase(): GamePhase {
+    return this.state.phase;
+  }
+
+  /** The engine game id — the gateway's host-cache key and room-echo. */
+  get gameId(): string {
+    return this.state.gameId;
+  }
+
+  /** The redacted client projection of the current state (§4 boundary). */
+  get clientState(): ClientGameState {
+    return projectClientState(this.state);
   }
 
   private submitNow(session: SubmitSession, raw: unknown): WireCommandResult {
@@ -118,6 +138,7 @@ export class GameHost {
       commandId: command.commandId,
       actorId: session.actorId,
       commandType: command.type,
+      command,
       events: result.events,
       snapshot: buildSnapshot(result.state),
     });

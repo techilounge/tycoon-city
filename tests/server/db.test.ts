@@ -89,6 +89,7 @@ describe('TycoonDb round-trips', () => {
         commandId: 'c-start-1',
         actorId: 'p1',
         commandType: 'START_GAME',
+        command: startCommand(created.state.version, 'c-start-1'),
         events: result.events,
         snapshot: buildSnapshot(result.state),
       });
@@ -143,6 +144,7 @@ describe('TycoonDb round-trips', () => {
       commandId: 'c-start-1',
       actorId: 'p1',
       commandType: 'START_GAME',
+      command: startCommand(created.state.version, 'c-start-1'),
       events: applied.events,
       snapshot: buildSnapshot(applied.state),
     });
