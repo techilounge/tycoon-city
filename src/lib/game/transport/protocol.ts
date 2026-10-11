@@ -11,9 +11,13 @@
 import type { AnyGameEvent } from '../events';
 import type { RuleErrorCode } from '../engine/errors';
 import { RuleError } from '../engine/errors';
+import type { GamePhase, PlayerId, PlayerState } from '../types';
 
-/** Socket event names (spec "Socket protocol"). */
+/** Socket event names (spec "Socket protocol"). `create` is Phase 2's additive
+ *  room-bootstrap event — the spec's protocol table names no creation message,
+ *  so rooms are born over the same socket surface as every other interaction. */
 export const SOCKET_EVENTS = {
+  create: 'game:create',
   join: 'game:join',
   command: 'game:command',
   joined: 'game:joined',
@@ -27,7 +31,51 @@ export type GatewayErrorCode =
   | 'UNAUTHENTICATED'
   | 'RATE_LIMITED'
   | 'GAME_NOT_FOUND'
-  | 'STATE_LOAD_FAILED';
+  | 'STATE_LOAD_FAILED'
+  /** Room lifecycle (PR 15): unknown room code, game past its LOBBY, no free
+   *  seat, a bad token on re-join, malformed create/join payload, or an
+   *  unexpected server fault. */
+  | 'ROOM_NOT_FOUND'
+  | 'ROOM_IN_PROGRESS'
+  | 'ROOM_FULL'
+  | 'INVALID_SESSION'
+  | 'INVALID_PAYLOAD'
+  | 'INTERNAL';
+
+/** One claimed seat, as the sessions table knows it. */
+export interface RosterEntry {
+  readonly actorId: PlayerId;
+  readonly name: string;
+}
+
+/** The public room view broadcast as `game:joined` — no token, ever. */
+export interface JoinedBroadcast {
+  readonly gameId: string;
+  readonly roomCode: string;
+  readonly actorId: PlayerId;
+  readonly name: string;
+  readonly phase: GamePhase;
+  /** All engine seats (claimed or not) — plain public PlayerState rows. */
+  readonly players: readonly PlayerState[];
+  /** Claimed seats with display names, in seat order. */
+  readonly roster: readonly RosterEntry[];
+}
+
+/** The private ack of `game:create` / `game:join` — the broadcast plus the
+ *  joiner's own session token (a credential: joiner-only, never broadcast). */
+export interface SessionAck {
+  readonly ok: true;
+  readonly token: string;
+  readonly gameId: string;
+  readonly roomCode: string;
+  readonly actorId: PlayerId;
+  readonly phase: GamePhase;
+  readonly players: readonly PlayerState[];
+  readonly roster: readonly RosterEntry[];
+}
+
+/** Ack union for the room events: the SessionAck or a wire error. */
+export type RoomAck = SessionAck | { readonly ok: false; readonly error: WireError };
 
 /** The wire-safe error: a closed-set code plus a human message. */
 export interface WireError {
