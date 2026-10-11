@@ -18,14 +18,14 @@ import { validateCommandShape, type CommandType, type GameCommand } from '../com
 import { BOARD_LOOP_SIZE, BOARD_SPACES, MODES, MODE_IDS, START_BONUS, isPurchasable, type ModeId } from '../board-v1';
 import { stampEvents, type AnyEventInput, type AnyGameEvent } from '../events';
 import { rngForState, type RandomSource } from '../rng';
-import { MAX_PLAYERS, MIN_PLAYERS, RULES_VERSION, type GameState, type PlayerId } from '../types';
+import { BANK_ID, MAX_PLAYERS, MIN_PLAYERS, RULES_VERSION, type GameState, type PlayerId } from '../types';
 import { RuleError } from './errors';
 import { moveForward, nearestParkIndex } from './movement';
 import { resolveLanding } from './economy';
 import { isDebtHopeless, mortgageHandler, settleDebtHandler, sellUpgradeHandler } from './debt';
-import { bidHandler, passBidHandler, passToAuctionHandler, requireAuctionableLandedSpace } from './auctions';
+import { bidHandler, passBidHandler, passToAuctionHandler, requireAuctionableLandedSpace, voidBidHandler } from './auctions';
 import { buildHandler, mortgageManagementHandler, sellUpgradeManagementHandler, spaceIdPayload, unmortgageHandler } from './development';
-import { concludeTurn, estateBidHandler, estatePassBidHandler, evaluateNetWorthTarget, surrenderHandler } from './endgame';
+import { concludeTurn, estateBidHandler, estatePassBidHandler, estateVoidBidHandler, evaluateNetWorthTarget, surrenderHandler } from './endgame';
 import { answerTradeHandler, offerTradeHandler } from './trading';
 import type { GameStateDraft, DraftPlayer } from './draft';
 import { requirePlayer } from './draft';
@@ -70,7 +70,11 @@ export function applyCommand(state: GameState, command: GameCommand, rng: Random
       received: command.gameId,
     }));
   }
-  if (!state.players.some((player) => player.id === command.actorId)) {
+  // The bank is a legal actor for exactly one command — VOID_BID, the
+  // deadline service's void of a timed-out high bid (contract §3 row 3).
+  // Bank-acted commands of any other type still die at step 5: canAct
+  // requires a live player for every non-VOID_BID type.
+  if (command.actorId !== BANK_ID && !state.players.some((player) => player.id === command.actorId)) {
     return err(new RuleError('UNKNOWN_PLAYER', `actor ${command.actorId} is not a player in this game`, { actorId: command.actorId }));
   }
 
@@ -174,6 +178,14 @@ export function applyCommand(state: GameState, command: GameCommand, rng: Random
  * eligible bidders whether it is a decliner's auction or a bank estate's).
  */
 export function canAct(state: GameState, command: GameCommand): boolean {
+  // The bank (server identity) may only VOID_BID — the deadline service's
+  // void of a timed-out high bid (contract §3 row 3). The service composes
+  // it against an open auction; a player-claimed VOID_BID never authorizes
+  // (the gateway stamps the session's player id), and the bank can never
+  // bid, pass, or hold.
+  if (command.type === 'VOID_BID') {
+    return command.actorId === BANK_ID && state.auction !== null;
+  }
   const actor = state.players.find((player) => player.id === command.actorId);
   if (!actor || actor.eliminated) return false;
   switch (command.type) {
@@ -376,6 +388,8 @@ const HANDLERS: { [T in CommandType]?: CommandHandler } = {
     draft.turnPhase === 'ELIMINATION_AUCTIONS' ? estateBidHandler(draft, command) : bidHandler(draft, command),
   PASS_BID: (draft, command) =>
     draft.turnPhase === 'ELIMINATION_AUCTIONS' ? estatePassBidHandler(draft, command) : passBidHandler(draft, command),
+  VOID_BID: (draft, command) =>
+    draft.turnPhase === 'ELIMINATION_AUCTIONS' ? estateVoidBidHandler(draft, command) : voidBidHandler(draft, command),
   SETTLE_DEBT: settleDebtHandler,
   SELL_UPGRADE: (draft, command) =>
     draft.turnPhase === 'TURN_MANAGEMENT' ? sellUpgradeManagementHandler(draft, command) : sellUpgradeHandler(draft, command),

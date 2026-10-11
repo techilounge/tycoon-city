@@ -36,6 +36,11 @@ export interface CommandPayloadMap {
   readonly BID: { readonly auctionId: string; readonly amount: number };
   /** Binding, permanent pass for the named auction (spec §5). */
   readonly PASS_BID: { readonly auctionId: string };
+  /** Deadline void of the standing high bid (contract §3 row 3, Phase 2): the
+   *  bidder is out of the auction and their pledge is released. The actor is
+   *  always the bank (BANK_ID) — the server's deadline service is the only
+   *  legitimate composer; a player-claimed VOID_BID never authorizes. */
+  readonly VOID_BID: { readonly auctionId: string };
   readonly BUILD: { readonly spaceId: SpaceId };
   readonly SELL_UPGRADE: { readonly spaceId: SpaceId };
   readonly MORTGAGE: { readonly spaceId: SpaceId };
@@ -171,6 +176,7 @@ const PAYLOAD_VALIDATORS: { [T in CommandType]: PayloadValidator } = {
   END_TURN: payloadFor({}),
   BID: payloadFor({ auctionId: requireNonEmptyString, amount: requirePositiveNumber }),
   PASS_BID: payloadFor({ auctionId: requireNonEmptyString }),
+  VOID_BID: payloadFor({ auctionId: requireNonEmptyString }),
   BUILD: payloadFor({ spaceId: requireNonEmptyString }),
   SELL_UPGRADE: payloadFor({ spaceId: requireNonEmptyString }),
   MORTGAGE: payloadFor({ spaceId: requireNonEmptyString }),
