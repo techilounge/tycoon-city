@@ -5,3 +5,5 @@ node_modules/
 *.tsbuildinfo
 .DS_Store
 tools/sim/results/
+# Server SQLite database (Phase 2 PR 14) — path via TYCOON_DB_PATH, default ./data/tycoon.db
+data/

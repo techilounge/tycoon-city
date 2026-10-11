@@ -16,11 +16,11 @@ import { VictoryModal } from '@/components/VictoryModal';
 import { MODES, MODE_IDS, type ModeId } from '@/lib/game/board-v1';
 import type { CommandType, GameCommand } from '@/lib/game/commands';
 import { LocalCommandSink } from '@/lib/game/engine/transport';
+import { createCommandSink, type TransportBundle } from '@/lib/game/transport/createCommandSink';
 import type { AnyGameEvent } from '@/lib/game/events';
 import { modalPlan, pendingCardReveal, pendingElimination } from '@/lib/game/ui/modals';
 import { currentTurnDice } from '@/lib/game/ui/uiPlayer';
 import {
-  LocalSnapshotStore,
   persistGame,
   readStartupSnapshot,
   type StartupSnapshot,
@@ -155,7 +155,7 @@ function GameScreen() {
   /** Save/resume (spec §11): startup read result + the last autosave outcome. */
   const [startup, setStartup] = useState<StartupSnapshot>({ kind: 'LOADING' });
   const [savedLabel, setSavedLabel] = useState<'saved' | 'failed' | null>(null);
-  const storeRef = useRef<LocalSnapshotStore | null>(null);
+  const transportRef = useRef<TransportBundle | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const commandCounter = useRef(0);
   const gameCounter = useRef(0);
@@ -163,32 +163,35 @@ function GameScreen() {
   useEffect(() => () => unsubscribeRef.current?.(), []);
 
   // One-time startup read (spec §11): what the pre-game screen should offer.
+  // The transport comes from the factory (seam map §5 item 4) — the page no
+  // longer constructs sinks or the snapshot store inline; the local branch
+  // returns exactly the wiring this page used to build by hand.
   useEffect(() => {
-    const store = new LocalSnapshotStore(window.localStorage);
-    storeRef.current = store;
-    setStartup(readStartupSnapshot(store));
+    const transport = createCommandSink({ mode: 'local', storage: window.localStorage });
+    transportRef.current = transport;
+    setStartup(readStartupSnapshot(transport.store));
   }, []);
 
   // Autosave after every applied change (spec §11). The schema-validated
   // snapshot is the authority; the companion log only feeds the history
   // panel after a resume.
   useEffect(() => {
-    const store = storeRef.current;
+    const store = transportRef.current?.store;
     if (!store || !state || startup.kind === 'LOADING') return;
     setSavedLabel(persistGame(store, state, history) ? 'saved' : 'failed');
   }, [state, history, startup.kind]);
 
   /** Continues a schema-validated snapshot through the LocalCommandSink resume seam. */
   const resumeGame = useCallback((snapshot: GameSnapshot) => {
-    const store = storeRef.current;
-    if (!store) return;
-    const next = LocalCommandSink.resume(snapshot, store);
+    const transport = transportRef.current;
+    if (!transport) return;
+    const next = transport.resumeSink(snapshot);
     unsubscribeRef.current?.();
     unsubscribeRef.current = next.events.subscribe(snapshot.gameId, 1, (event) => {
       setHistory((h) => [...h, event]);
       setState(next.state());
     });
-    const resumedLog = store.loadCompanionLog(snapshot.gameId);
+    const resumedLog = transport.store.loadCompanionLog(snapshot.gameId);
     setHistory(resumedLog);
     setSink(next);
     setState(next.state());
@@ -224,9 +227,11 @@ function GameScreen() {
   /** Creates the game with the lobby's config, then starts it in one action. */
   const startGame = useCallback(async () => {
     if (!config) return;
-    storeRef.current?.clear();
+    const transport = transportRef.current;
+    if (!transport) return;
+    transport.store.clear();
     const gameId = `g-local-${++gameCounter.current}`;
-    const next = LocalCommandSink.create({
+    const next = transport.createSink({
       gameId,
       seed: config.seed,
       playerIds: [...config.playerIds],
