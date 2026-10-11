@@ -11,7 +11,8 @@ import { after, before, describe, it } from 'node:test';
 import { stateHash } from '../../src/lib/game/engine/replay';
 import type { GameCommand } from '../../src/lib/game/commands';
 import { startHarness, type TestHarness } from './helpers';
-import { openRoom, runNetworkedGame, type RoomFixture } from './wireDriver';
+import { openRoom, runNetworkedGame, WireClient, type RoomFixture } from './wireDriver';
+import { SOCKET_EVENTS, type SessionAck } from '../../src/lib/game/transport/protocol';
 
 describe('17.3 conformance over the wire (criterion 3)', () => {
   let harness: TestHarness;
@@ -59,6 +60,49 @@ describe('17.3 conformance over the wire (criterion 3)', () => {
     assert.equal(second.ok, true);
     assert.equal(second.applied, false);
     assert.deepEqual(second.events, first.events);
+  });
+
+  it('probe (c) across a disconnect: a pre-disconnect commandId resubmits to the stored events (criterion 3)', { timeout: 60_000 }, async () => {
+    const fixture = await openRoom({ harness, mode: 'BLITZ', seatCount: 2 });
+    const client = fixture.clients[0];
+
+    const start = {
+      commandId: 'conf-dc-start-1',
+      gameId: fixture.gameId,
+      actorId: 'p1',
+      expectedVersion: client.state.version,
+      type: 'START_GAME',
+      payload: {},
+    } as GameCommand;
+    const first = (await client.command(start)) as { ok: true; applied: true; events: unknown[] };
+    assert.equal(first.applied, true);
+    assert.ok(first.events.length >= 1);
+
+    // The transport dies mid-retry: the client never learns whether the
+    // command landed. On a fresh socket, re-authenticated by token, the
+    // client replays the identical envelope.
+    const fromSeq = Math.max(...client.events.map((event) => event.sequence));
+    client.socket.disconnect();
+    const fresh = await WireClient.connect(harness);
+    const joinAck = (await harness.ack(fresh.socket, SOCKET_EVENTS.join, {
+      code: fixture.roomCode,
+      name: 'Player 1',
+      token: fixture.tokens[0],
+      fromSeq,
+    })) as SessionAck | { ok: false; error: { code: string; message: string } };
+    if (!joinAck.ok) throw new Error(`re-authentication failed: ${JSON.stringify(joinAck)}`);
+    assert.equal(joinAck.actorId, 'p1', 'the token re-authenticated as a different actor');
+    await fresh.waitForVersion(client.state.version);
+
+    const retry = await fresh.command(start);
+    assert.ok(retry.ok, `the replayed command was rejected: ${JSON.stringify(retry)}`);
+    assert.ok(!retry.applied, 'the replayed command re-applied after a disconnect');
+    assert.deepEqual(retry.ok ? retry.events : [], first.events, 'the replayed events differ from the original application');
+
+    // Nothing moved: same version, one ledger row.
+    assert.equal(fresh.state.version, client.state.version);
+    const ledger = harness.db.listAppliedCommands(fixture.gameId).filter((row) => row.commandId === 'conf-dc-start-1');
+    assert.equal(ledger.length, 1);
   });
 
   /** Operator privilege: the authoritative full-state hash of the game's latest snapshot. */

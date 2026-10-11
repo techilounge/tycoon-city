@@ -21,6 +21,8 @@ import { canonicalJson } from '../../src/lib/game/engine/replay';
 import { rngForState } from '../../src/lib/game/rng';
 import type { GameState } from '../../src/lib/game/types';
 import { PRIVATE_STATE_KEYS, projectClientState } from '../../server/game/redact';
+// The detector the wire-level scan runs over live broadcasts (integration.test.ts).
+import { hasKeyDeep as wireScanHasKeyDeep } from './helpers';
 
 // ---------------------------------------------------------------------------
 // 1. Type-level pin — compile-time, mirrored at runtime below.
@@ -100,6 +102,28 @@ describe('redaction — the §4 boundary (criterion 11)', () => {
       for (const key of PRIVATE_STATE_KEYS) {
         assert.equal(hasKeyDeep(parsed, key), false, `private key "${key}" leaked into event ${event.type}`);
       }
+    }
+  });
+
+  it('rejects an injected private payload — a leak cannot pass the scan silently (guard non-vacuity)', () => {
+    // A buggy projection or a compromised server could emit a plausible
+    // client state with private state planted at depth. The SAME detector
+    // the wire-level broadcast scan runs must fire on it — this test is the
+    // proof that the guard fails loudly instead of passing vacuously.
+    const forged = {
+      gameId: 'g-inject',
+      version: 7,
+      phase: 'PLAYING',
+      players: [
+        { id: 'p1', cash: 100, rngState: '0x9e3779b9' },
+        { id: 'p2', cash: 200 },
+      ],
+      nested: { deep: { history: [{ eventDeck: ['card-a', 'card-b'] }] } },
+      seed: 0x5eed1234,
+    };
+    const parsed: unknown = JSON.parse(canonicalJson(forged));
+    for (const key of PRIVATE_STATE_KEYS) {
+      assert.equal(wireScanHasKeyDeep(parsed, key), true, `the scan FAILED to detect an injected "${key}" — the guard is vacuous`);
     }
   });
 });

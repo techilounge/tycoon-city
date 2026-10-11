@@ -499,3 +499,244 @@ export async function runNetworkedGame(
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Additive helpers for the Phase 2 conformance/concurrency suites: observed
+// waits, per-seat submissions, single-turn play, and event-stream utils.
+// ---------------------------------------------------------------------------
+
+/** Module-scoped counter — command ids only need uniqueness per game. */
+let helperSeq = 0;
+
+/** Compose a command at a client's currently observed version. */
+export function composeAt(
+  client: WireClient,
+  fixture: RoomFixture,
+  actorId: PlayerId,
+  type: GameCommand['type'],
+  payload: Record<string, unknown> = {},
+  commandId?: string,
+): GameCommand {
+  return {
+    commandId: commandId ?? `wire-helper-${++helperSeq}`,
+    gameId: fixture.gameId,
+    actorId,
+    expectedVersion: client.state.version,
+    type,
+    payload,
+  } as GameCommand;
+}
+
+/**
+ * Submit a command through `client`'s socket claiming `actorId` — the general
+ * form. The gateway re-stamps identity from the session, so a forged claim is
+ * exactly how the identity tests prove the server ignores it. After an
+ * application, waits on every CONNECTED client to observe the new version
+ * (a disconnected client receives no broadcasts and must not be waited on).
+ */
+export async function submitAs(
+  fixture: RoomFixture,
+  client: WireClient,
+  actorId: PlayerId,
+  type: GameCommand['type'],
+  payload: Record<string, unknown> = {},
+  commandId?: string,
+): Promise<WireCommandResult> {
+  const command = composeAt(client, fixture, actorId, type, payload, commandId);
+  const preVersion = client.state.version;
+  const result = await client.command(command);
+  if (result.ok && result.applied) {
+    await Promise.all(
+      fixture.clients
+        .filter((c) => c.socket.connected)
+        .map((c) => c.waitForVersion(preVersion + 1)),
+    );
+  }
+  return result;
+}
+
+/** Submit from a fixture seat's own client, as itself. */
+export async function submitFromSeat(
+  fixture: RoomFixture,
+  seat: number,
+  type: GameCommand['type'],
+  payload: Record<string, unknown> = {},
+  commandId?: string,
+): Promise<WireCommandResult> {
+  const client = fixture.clients[seat];
+  if (!client.socket.connected) throw new WireDriverError(`seat ${seat + 1}'s socket is disconnected`);
+  return submitAs(fixture, client, fixture.playerIds[seat] as PlayerId, type, payload, commandId);
+}
+
+/** Poll a client's observed state until `predicate` holds, with a hard bound. */
+export async function waitForObserved(
+  client: WireClient,
+  predicate: (state: ClientGameState) => boolean,
+  label: string,
+  timeoutMs = 15_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      if (predicate(client.state)) return;
+    } catch {
+      // No state observed yet — keep waiting.
+    }
+    if (Date.now() > deadline) throw new WireDriverError(`timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/** The `sequence:type` view of an event stream — the cross-seat comparison key. */
+export function eventStream(events: readonly AnyGameEvent[]): readonly string[] {
+  return events.map((event) => `${event.sequence}:${event.type}`);
+}
+
+/** Sequences must run 1..N with no gaps and no duplicates. */
+export function assertGapless(events: readonly AnyGameEvent[], label: string): void {
+  events.forEach((event, index) => {
+    if (event.sequence !== index + 1) {
+      throw new WireDriverError(
+        `${label}: event at index ${index} has sequence ${event.sequence} — the stream is not gapless from 1`,
+      );
+    }
+  });
+}
+
+/** Operator privilege: the redacted-projection hash of the server's latest snapshot. */
+export function serverRedactedHashOf(fixture: RoomFixture): string {
+  const snapshot = fixture.harness.db.loadSnapshot(fixture.gameId);
+  if (snapshot === null) throw new WireDriverError(`no snapshot for ${fixture.gameId}`);
+  return hashOf(projectClientState(snapshot.state));
+}
+
+/** Hooks for `playSingleTurn`. */
+export interface TurnHooks {
+  /** BUY_DECISION → PASS_TO_AUCTION regardless of the profile (forces auctions). */
+  readonly forceDecline?: boolean;
+  /** Return the instant an auction opens, before any bid (mid-auction tests). */
+  readonly haltOnAuctionOpen?: boolean;
+  /** Fired when an auction opens (before any bid), elimination auctions included. */
+  readonly onAuctionOpen?: (auctionId: string) => void;
+}
+
+/**
+ * Play the active player's current turn to completion over the wire, using
+ * the same strategy profiles as the simulation driver. Management never
+ * proposes trades (profiles receive a nonzero trades context — negotiation
+ * belongs to the full-game driver, and reconnect tests run with a seat
+ * disconnected); disconnected seats are skipped everywhere.
+ */
+export async function playSingleTurn(fixture: RoomFixture, seat: number, hooks: TurnHooks = {}): Promise<void> {
+  const actorId = fixture.playerIds[seat] as PlayerId;
+  const client = fixture.clients[seat];
+  const strategy = strategyFor(profileForSeat(seat));
+  const actorRng = mulberry32((fixture.seed ^ (0x9e3779b9 * (seat + 1))) >>> 0);
+
+  /** Submit for the actor; an unexpected rejection is a driver/rules mismatch — fail loudly, never spin. */
+  async function play(type: GameCommand['type'], payload: Record<string, unknown> = {}): Promise<void> {
+    const result = await submitFromSeat(fixture, seat, type, payload);
+    if (!result.ok) {
+      if (result.error.code === 'DEBT_HOPELESS') {
+        await submitFromSeat(fixture, seat, 'SURRENDER');
+        return;
+      }
+      throw new WireDriverError(`${type} was refused mid-turn for ${actorId}: ${result.error.code} ${result.error.message}`);
+    }
+  }
+
+  await waitForObserved(client, (s) => s.phase === 'PLAYING' && s.activePlayerId === actorId, `turn start of ${actorId}`);
+
+  for (let step = 0; step < 400; step++) {
+    const observed = client.state;
+    if (observed.phase !== 'PLAYING' || observed.activePlayerId !== actorId) return;
+    switch (observed.turnPhase) {
+      case 'AWAITING_ROLL': {
+        // Turn start AND the doubles re-roll — same decision point.
+        const decision = strategy.decideRoll(observed as never, actorId, actorRng as RandomSource);
+        await play(decision.action);
+        break;
+      }
+      case 'BUY_DECISION': {
+        const decision = hooks.forceDecline
+          ? ({ action: 'PASS_TO_AUCTION' } as const)
+          : strategy.decideBuy(observed as never, actorId, actorRng as RandomSource);
+        if (decision.action === 'BUY') {
+          await play('BUY');
+        } else {
+          await play('PASS_TO_AUCTION');
+          const opened = client.state.auction;
+          if (opened !== null) {
+            hooks.onAuctionOpen?.(opened.auctionId);
+            if (hooks.haltOnAuctionOpen) return;
+            await driveOpenAuction(fixture);
+          }
+        }
+        break;
+      }
+      case 'AUCTION':
+      case 'ELIMINATION_AUCTIONS': {
+        const auction = observed.auction;
+        if (auction === null) break;
+        hooks.onAuctionOpen?.(auction.auctionId);
+        if (hooks.haltOnAuctionOpen) return;
+        await driveOpenAuction(fixture);
+        break;
+      }
+      case 'TURN_MANAGEMENT': {
+        const action = strategy.decideManagement(observed as never, actorId, actorRng as RandomSource, {
+          actionsThisTurn: step,
+          tradesProposedThisTurn: 1,
+        });
+        if (action.action === 'OFFER_TRADE') {
+          throw new WireDriverError(`profiles gated trades on tradesProposedThisTurn, but ${actorId} still offered one`);
+        }
+        if (action.action === 'END_TURN') {
+          await play('END_TURN');
+          break;
+        }
+        await play(action.action, { spaceId: action.spaceId });
+        break;
+      }
+      case 'SETTLING_DEBT': {
+        const stepDecision = strategy.decideSettlement(observed as never, actorId, actorRng as RandomSource);
+        const payload: Record<string, unknown> =
+          'spaceId' in stepDecision ? { spaceId: (stepDecision as { spaceId: string }).spaceId } : {};
+        await play(stepDecision.action, payload);
+        break;
+      }
+      default:
+        // Transient phases settle on the next broadcast.
+        await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw new WireDriverError(`turn of ${actorId} exceeded 400 decision steps`);
+}
+
+/** Drive an open auction with every CONNECTED eligible seat, profile-decided. */
+async function driveOpenAuction(fixture: RoomFixture): Promise<void> {
+  const actorRngs = fixture.playerIds.map(
+    (_, seat) => mulberry32((fixture.seed ^ (0x9e3779b9 * (seat + 1))) >>> 0) as RandomSource,
+  );
+  for (let round = 0; round < 100; round++) {
+    const watcher = fixture.clients[0];
+    const auction = watcher.state.auction;
+    if (auction === null) return;
+    let acted = false;
+    for (const player of watcher.state.players) {
+      const current = watcher.state.auction;
+      if (current === null || current.auctionId !== auction.auctionId) break; // resolved mid-round
+      if (player.eliminated || current.passedPlayerIds.includes(player.id) || current.highBidderId === player.id) continue;
+      const seat = fixture.playerIds.indexOf(player.id);
+      const client = fixture.clients[seat];
+      if (!client.socket.connected) continue; // a disconnected seat cannot act
+      const decision = strategyFor(profileForSeat(seat)).decideBid(client.state as never, player.id, actorRngs[seat] as RandomSource);
+      const payload: Record<string, unknown> =
+        decision.action === 'BID' ? { auctionId: current.auctionId, amount: decision.amount } : { auctionId: current.auctionId };
+      await submitFromSeat(fixture, seat, decision.action, payload);
+      acted = true;
+    }
+    if (!acted) return; // only disconnected seats remain — a production deadline resolves this
+  }
+  throw new WireDriverError('auction exceeded 100 bidding rounds');
+}
