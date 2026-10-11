@@ -12,6 +12,7 @@
  * dollars — money stays in whole dollars by construction, not by rounding.
  */
 
+import type { ClientGameState } from './transport/clientState';
 import type { MoveDirection } from './events';
 import type { GameState, PlayerId, SpaceId } from './types';
 import { BOARD_SPACES, isPurchasable, type AssessmentSpace, type BoardSpace, type CardMoveEffect, type PurchasableSpace } from './board-v1';
@@ -260,7 +261,7 @@ export function netWorth({ cash, holdings }: NetWorthInput): number {
  * ever re-derives holdings itself (spec §9: one canonical function). A
  * player with no owned spaces contributes cash alone.
  */
-export function netWorthFromState(state: GameState, playerId: PlayerId): number {
+export function netWorthFromState(state: ClientGameState, playerId: PlayerId): number {
   const player = state.players.find((candidate) => candidate.id === playerId);
   if (!player) throw new Error(`rules-v1: netWorthFromState for unknown player ${playerId}`);
   const holdings: NetWorthHolding[] = [];
